@@ -1,0 +1,47 @@
+:root {
+  --fox-bg-base: #1f2228;
+  --fox-bg-glow-a: rgba(54, 88, 135, 0.22);
+  --fox-bg-glow-b: rgba(123, 66, 51, 0.2);
+  --fox-grid-line: rgba(255, 255, 255, 0.03);
+  --fox-chrome: rgba(39, 43, 51, 0.94);
+  --fox-surface: rgba(36, 39, 46, 0.96);
+  --fox-canvas: rgba(30, 33, 40, 0.9);
+  --fox-chip: rgba(255, 255, 255, 0.1);
+  --fox-border: rgba(255, 255, 255, 0.1);
+  --fox-shadow: 0 28px 70px rgba(0, 0, 0, 0.34);
+  --fox-text-strong: #eceff6;
+  --fox-text-body: #d0d7e1;
+  --fox-text-muted: #9da6b4;
+  --fox-code-bg: rgba(255, 255, 255, 0.09);
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh;
+  color: var(--fox-text-body);
+  background-color: var(--fox-bg-base);
+  background-image:
+    radial-gradient(circle at 18% 18%, var(--fox-bg-glow-a), transparent 36%),
+    radial-gradient(circle at 82% 22%, var(--fox-bg-glow-b), transparent 34%),
+    linear-gradient(var(--fox-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--fox-grid-line) 1px, transparent 1px),
+    linear-gradient(180deg, #242830 0%, #1c1f25 100%);
+  background-size: auto, auto, 32px 32px, 32px 32px, auto;
+  font-family: "Plus Jakarta Sans", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+body {
+  background-attachment: fixed;
+}
+
+code {
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  background: var(--fox-code-bg);
+  padding: 0.12rem 0.35rem;
+  border-radius: 0.3rem;
+}
