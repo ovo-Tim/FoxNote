@@ -305,6 +305,25 @@ function updateBlockPath(index: number, nextPath: string) {
   });
 }
 
+function updateBlockSize(index: number, nextWidth: number, nextHeight: number) {
+  const block = form.content[index];
+  if (!block) {
+    return;
+  }
+
+  const width = Math.max(140, Math.round(Number(nextWidth) || 0));
+  const height = Math.max(120, Math.round(Number(nextHeight) || 0));
+  if (block.width === width && block.height === height) {
+    return;
+  }
+
+  updateBlock(index, {
+    ...block,
+    width,
+    height,
+  });
+}
+
 function updateBlockContent(index: number, nextValue: string) {
   const block = form.content[index];
   if (!block) {
@@ -390,6 +409,7 @@ function buildBlockRenderContext(index: number, block: NoteBlock): BlockRenderCo
       updateBlockContent(index, nextValue);
     },
     updatePath: (nextPath) => updateBlockPath(index, nextPath),
+    updateSize: (nextWidth, nextHeight) => updateBlockSize(index, nextWidth, nextHeight),
     updateLevel: (nextLevel) => updateBlockLevel(index, nextLevel),
     updateFolded: (nextFolded) => updateBlockFolded(index, nextFolded),
     updateSummary: (nextSummary) => updateBlockSummary(index, nextSummary),
@@ -1125,7 +1145,7 @@ function onEditorPaneMouseDown(event: MouseEvent) {
 
   if (
     targetEl.closest(
-      "button, input, textarea, [contenteditable='true'], .v-field, .block-hover-actions, .tag-menu, .slash-menu, .action-menu, .image-paint-zone, .vp-editor, .vp-main, .vp-image, .vp-toolbar",
+      "button, input, textarea, [contenteditable='true'], .v-field, .block-hover-actions, .tag-menu, .slash-menu, .action-menu, .block-resize-handle, .image-paint-zone, .vp-editor, .vp-main, .vp-image, .vp-toolbar, .tldraw-zone, .tl-container, .tlui-layout",
     )
   ) {
     return;

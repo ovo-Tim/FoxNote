@@ -83,6 +83,34 @@ export async function loadNoteImageAttachment(
   return invoke<NoteAttachmentPayload>("load_note_image_attachment", { id, path });
 }
 
+export async function saveNoteAttachment(
+  id: string,
+  mimeType: string,
+  bytes: number[],
+  baseName?: string,
+  extension?: string,
+): Promise<string> {
+  return invoke<string>("save_note_attachment", {
+    id,
+    mimeType,
+    bytes,
+    baseName,
+    extension,
+  });
+}
+
+export async function loadNoteAttachment(
+  id: string,
+  path: string,
+  mimeType?: string,
+): Promise<NoteAttachmentPayload> {
+  return invoke<NoteAttachmentPayload>("load_note_attachment", {
+    id,
+    path,
+    mimeType,
+  });
+}
+
 export async function getTagBridgePath(): Promise<string> {
   return invoke<string>("get_tag_bridge_path");
 }

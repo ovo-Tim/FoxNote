@@ -31,6 +31,8 @@ pub enum NoteError {
     EmptyTitle,
     #[error("image data is empty")]
     EmptyImageData,
+    #[error("attachment data is empty")]
+    EmptyAttachmentData,
     #[error("attachment not found: {0}")]
     AttachmentNotFound(String),
 }
@@ -43,6 +45,10 @@ pub struct NoteBlock {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,6 +63,8 @@ impl NoteBlock {
             block_type: "typst".to_string(),
             content: Some("= New Note\n\nStart writing here.".to_string()),
             path: None,
+            width: None,
+            height: None,
             level: None,
             folded: None,
             summary: None,
@@ -119,6 +127,8 @@ impl NoteDocument {
                 },
                 content: block.content,
                 path: block.path,
+                width: block.width.map(|value| value.clamp(120, 4096)),
+                height: block.height.map(|value| value.clamp(120, 4096)),
                 level: block.level.map(|value| value.clamp(1, 6)),
                 folded: block.folded,
                 summary: block.summary,
@@ -402,8 +412,19 @@ impl NoteService {
         mime_type: &str,
         bytes: &[u8],
     ) -> Result<String, NoteError> {
+        self.save_note_attachment(note_id, mime_type, bytes, Some("pasted"), None)
+    }
+
+    pub fn save_note_attachment(
+        &self,
+        note_id: &str,
+        mime_type: &str,
+        bytes: &[u8],
+        base_name: Option<&str>,
+        extension: Option<&str>,
+    ) -> Result<String, NoteError> {
         if bytes.is_empty() {
-            return Err(NoteError::EmptyImageData);
+            return Err(NoteError::EmptyAttachmentData);
         }
 
         let note_path = normalize_relative_path(note_id)?;
@@ -419,16 +440,20 @@ impl NoteService {
         let attachments_dir = note_absolute.join("attachments");
         fs::create_dir_all(&attachments_dir)?;
 
-        let extension = extension_for_image_mime(mime_type);
+        let extension = extension
+            .and_then(normalize_attachment_extension)
+            .unwrap_or_else(|| extension_for_attachment_mime(mime_type).to_string());
         let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-        let base_name = format!("pasted-{timestamp}");
-        let mut file_name = format!("{base_name}.{extension}");
+        let stem = sanitize_path_segment(base_name.unwrap_or("attachment"))
+            .unwrap_or_else(|| "attachment".to_string());
+        let generated_base = format!("{stem}-{timestamp}");
+        let mut file_name = format!("{generated_base}.{extension}");
 
         for suffix in 1..1000 {
             if !attachments_dir.join(&file_name).exists() {
                 break;
             }
-            file_name = format!("{base_name}-{suffix}.{extension}");
+            file_name = format!("{generated_base}-{suffix}.{extension}");
         }
 
         let absolute_file = attachments_dir.join(&file_name);
@@ -442,6 +467,15 @@ impl NoteService {
         &self,
         note_id: &str,
         path: &str,
+    ) -> Result<NoteAttachmentPayload, NoteError> {
+        self.load_note_attachment(note_id, path, None)
+    }
+
+    pub fn load_note_attachment(
+        &self,
+        note_id: &str,
+        path: &str,
+        mime_type_hint: Option<&str>,
     ) -> Result<NoteAttachmentPayload, NoteError> {
         let note_path = normalize_relative_path(note_id)?;
         if note_path.as_os_str().is_empty() {
@@ -464,13 +498,18 @@ impl NoteService {
         }
 
         let bytes = fs::read(&absolute)?;
-        let mime_type = mime_for_image_extension(
-            absolute
-                .extension()
-                .and_then(OsStr::to_str)
-                .unwrap_or_default(),
-        )
-        .to_string();
+        let mime_type = mime_type_hint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                mime_for_attachment_extension(
+                    absolute
+                        .extension()
+                        .and_then(OsStr::to_str)
+                        .unwrap_or_default(),
+                )
+            })
+            .to_string();
 
         Ok(NoteAttachmentPayload { mime_type, bytes })
     }
@@ -752,8 +791,30 @@ fn slugify_title(raw: &str) -> String {
     sanitize_path_segment(raw).unwrap_or_else(|| "note".to_string())
 }
 
-fn extension_for_image_mime(raw: &str) -> &'static str {
+fn normalize_attachment_extension(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_start_matches('.');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut clean = String::new();
+    for character in trimmed.chars() {
+        if character.is_ascii_alphanumeric() {
+            clean.push(character.to_ascii_lowercase());
+        }
+    }
+
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+}
+
+fn extension_for_attachment_mime(raw: &str) -> &'static str {
     match raw.trim().to_ascii_lowercase().as_str() {
+        "application/vnd.tldraw+json" => "tldr",
+        "application/json" => "json",
         "image/jpeg" | "image/jpg" => "jpg",
         "image/webp" => "webp",
         "image/gif" => "gif",
@@ -761,12 +822,15 @@ fn extension_for_image_mime(raw: &str) -> &'static str {
         "image/svg+xml" => "svg",
         "image/heic" => "heic",
         "image/heif" => "heif",
-        _ => "png",
+        "image/png" => "png",
+        _ => "bin",
     }
 }
 
-fn mime_for_image_extension(raw: &str) -> &'static str {
+fn mime_for_attachment_extension(raw: &str) -> &'static str {
     match raw.trim().to_ascii_lowercase().as_str() {
+        "tldr" => "application/vnd.tldraw+json",
+        "json" => "application/json",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
@@ -774,7 +838,8 @@ fn mime_for_image_extension(raw: &str) -> &'static str {
         "svg" => "image/svg+xml",
         "heic" => "image/heic",
         "heif" => "image/heif",
-        _ => "image/png",
+        "png" => "image/png",
+        _ => "application/octet-stream",
     }
 }
 
@@ -795,6 +860,8 @@ mod tests {
                     block_type: "typst".to_string(),
                     content: Some("= Hello".to_string()),
                     path: None,
+                    width: None,
+                    height: None,
                     level: None,
                     folded: None,
                     summary: None,
@@ -803,6 +870,8 @@ mod tests {
                     block_type: "canvas".to_string(),
                     content: None,
                     path: Some("./draw.svg".to_string()),
+                    width: None,
+                    height: None,
                     level: None,
                     folded: None,
                     summary: None,
@@ -834,6 +903,8 @@ mod tests {
             block_type: "canvas".to_string(),
             content: None,
             path: Some("./draw.svg".to_string()),
+            width: None,
+            height: None,
             level: None,
             folded: None,
             summary: None,

@@ -299,6 +299,40 @@ fn load_note_image_attachment(
 }
 
 #[tauri::command]
+fn save_note_attachment(
+    state: tauri::State<AppState>,
+    id: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    base_name: Option<String>,
+    extension: Option<String>,
+) -> Result<String, String> {
+    state
+        .note_service
+        .save_note_attachment(
+            &id,
+            &mime_type,
+            &bytes,
+            base_name.as_deref(),
+            extension.as_deref(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn load_note_attachment(
+    state: tauri::State<AppState>,
+    id: String,
+    path: String,
+    mime_type: Option<String>,
+) -> Result<NoteAttachmentPayload, String> {
+    state
+        .note_service
+        .load_note_attachment(&id, &path, mime_type.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn list_tags(state: tauri::State<AppState>) -> Result<Vec<TagEntry>, String> {
     state
         .tag_service
@@ -552,6 +586,8 @@ pub fn run() {
             export_note_typst,
             save_note_image_attachment,
             load_note_image_attachment,
+            save_note_attachment,
+            load_note_attachment,
             get_tag_bridge_path,
             get_sync_config_path,
             get_plugin_config_path,

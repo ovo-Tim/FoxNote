@@ -2,6 +2,8 @@ export interface NoteBlock {
   type: string;
   content?: string | null;
   path?: string | null;
+  width?: number | null;
+  height?: number | null;
   level?: number | null;
   folded?: boolean | null;
   summary?: string | null;

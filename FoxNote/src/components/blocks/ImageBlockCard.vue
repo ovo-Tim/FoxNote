@@ -22,11 +22,14 @@ const props = defineProps<{
   noteId: string;
   path: string;
   editing: boolean;
+  width?: number;
+  height?: number;
 }>();
 
 const emit = defineEmits<{
   focus: [];
   updatePath: [path: string];
+  updateSize: [width: number, height: number];
 }>();
 
 const imageUrl = ref("");
@@ -40,8 +43,36 @@ const imageHeight = ref(720);
 const tools = ref<any[]>([]);
 const history = ref<any[]>([]);
 const settings = ref<any>(null);
+const resizing = ref(false);
+const resizeStart = ref({ x: 0, y: 0, width: 0, height: 0 });
+const suppressFocusClick = ref(false);
 
 const altText = computed(() => props.path || "image attachment");
+
+const frameWidth = computed(() => {
+  const requested = Math.round(Number(props.width) || 0);
+  if (requested >= 140) {
+    return Math.min(2048, requested);
+  }
+  return Math.max(180, Math.min(2048, imageWidth.value));
+});
+
+const frameHeight = computed(() => {
+  const requested = Math.round(Number(props.height) || 0);
+  if (requested >= 120) {
+    return Math.min(2048, requested);
+  }
+  return Math.max(140, Math.min(2048, imageHeight.value));
+});
+
+const frameStyle = computed(() => ({
+  width: `${frameWidth.value}px`,
+  height: `${frameHeight.value}px`,
+}));
+
+const editorFrameStyle = computed(() => ({
+  width: `${frameWidth.value}px`,
+}));
 
 function revokeImageUrl() {
   if (!imageUrl.value) {
@@ -145,6 +176,57 @@ async function onEditorSave(params: any) {
   }
 }
 
+function onResizePointerMove(event: PointerEvent) {
+  if (!resizing.value) {
+    return;
+  }
+
+  const deltaX = event.clientX - resizeStart.value.x;
+  const deltaY = event.clientY - resizeStart.value.y;
+  const nextWidth = Math.max(140, Math.min(2048, resizeStart.value.width + deltaX));
+  const nextHeight = Math.max(120, Math.min(2048, resizeStart.value.height + deltaY));
+  emit("updateSize", Math.round(nextWidth), Math.round(nextHeight));
+}
+
+function stopResize() {
+  if (!resizing.value) {
+    return;
+  }
+
+  resizing.value = false;
+  window.removeEventListener("pointermove", onResizePointerMove);
+  window.removeEventListener("pointerup", stopResize);
+}
+
+function onResizeHandlePointerDown(event: PointerEvent) {
+  if (event.button !== 0) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  suppressFocusClick.value = true;
+  resizing.value = true;
+  resizeStart.value = {
+    x: event.clientX,
+    y: event.clientY,
+    width: frameWidth.value,
+    height: frameHeight.value,
+  };
+  window.addEventListener("pointermove", onResizePointerMove);
+  window.addEventListener("pointerup", stopResize);
+}
+
+function onCardClick(event: MouseEvent) {
+  if (suppressFocusClick.value) {
+    suppressFocusClick.value = false;
+    event.stopPropagation();
+    return;
+  }
+
+  emit("focus");
+}
+
 watch(
   () => [props.noteId, props.path],
   () => {
@@ -163,35 +245,45 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  stopResize();
   revokeImageUrl();
 });
 </script>
 
 <template>
-  <section class="image-card" :class="{ 'editing-mode': editing }" @click="emit('focus')">
+  <section class="image-card" :class="{ 'editing-mode': editing, resizing }" @click="onCardClick">
     <p v-if="loading" class="image-empty">Loading image...</p>
-    <div v-else-if="editing && tools.length > 0 && settings" class="editor-wrap image-paint-zone">
+    <div v-else-if="editing && tools.length > 0 && settings" class="editor-wrap image-paint-zone" :style="editorFrameStyle">
       <VpEditor
         v-model:history="history"
         v-model:settings="settings"
         :tools="tools"
-        :width="imageWidth"
-        :height="imageHeight"
+        :width="frameWidth"
+        :height="frameHeight"
         class="vp-editor"
         @save="onEditorSave"
       />
       <p v-if="saving" class="image-empty">Saving edited image...</p>
       <p v-if="editorError" class="image-empty error">{{ editorError }}</p>
     </div>
-    <img v-else-if="imageUrl" class="image-preview" :src="imageUrl" :alt="altText" />
+    <img v-else-if="imageUrl" class="image-preview" :style="frameStyle" :src="imageUrl" :alt="altText" />
     <p v-else-if="loadError" class="image-empty">{{ loadError }}</p>
     <p v-else class="image-empty">Image attachment missing.</p>
     <p class="image-path" v-if="path">{{ path }}</p>
+    <button
+      type="button"
+      class="block-resize-handle"
+      title="Resize block"
+      @pointerdown="onResizeHandlePointerDown"
+      @mousedown.stop.prevent
+      @click.stop
+    />
   </section>
 </template>
 
 <style scoped>
 .image-card {
+  position: relative;
   border: 1px solid color-mix(in srgb, var(--fox-border) 85%, transparent 15%);
   border-radius: 10px;
   background: color-mix(in srgb, var(--fox-surface) 92%, black 8%);
@@ -203,7 +295,6 @@ onBeforeUnmount(() => {
 
 .image-preview {
   max-width: 100%;
-  max-height: min(62vh, 580px);
   object-fit: contain;
   border-radius: 8px;
   display: block;
@@ -219,8 +310,9 @@ onBeforeUnmount(() => {
 }
 
 .editor-wrap {
+  max-width: 100%;
   border-radius: 8px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid color-mix(in srgb, var(--fox-border) 78%, transparent 22%);
 }
 
@@ -273,5 +365,21 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
   font-family: "Iosevka", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   word-break: break-word;
+}
+
+.block-resize-handle {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 14px;
+  height: 14px;
+  border: 1px solid color-mix(in srgb, var(--fox-text-muted) 76%, transparent 24%);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fox-surface) 82%, #1b263a 18%);
+  cursor: nwse-resize;
+}
+
+.block-resize-handle:hover {
+  border-color: color-mix(in srgb, var(--fox-text-strong) 75%, transparent 25%);
 }
 </style>

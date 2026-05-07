@@ -22,10 +22,13 @@ const imageBlockPlugin: BlockPlugin = {
       noteId: context.note?.id ?? "",
       path: String(context.block.path ?? ""),
       editing: context.editing,
+      width: Number(context.block.width ?? 0),
+      height: Number(context.block.height ?? 0),
     }),
     on: (context) => ({
       focus: context.setEditing,
       updatePath: (path: string) => context.updatePath(String(path ?? "")),
+      updateSize: (width: number, height: number) => context.updateSize(width, height),
     }),
   },
 };

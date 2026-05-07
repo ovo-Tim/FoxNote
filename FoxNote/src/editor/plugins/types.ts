@@ -12,6 +12,7 @@ export interface BlockRenderContext {
   updateBlock: (nextBlock: NoteBlock) => void;
   updateContent: (nextValue: string) => void;
   updatePath: (nextPath: string) => void;
+  updateSize: (nextWidth: number, nextHeight: number) => void;
   updateLevel: (nextLevel: number) => void;
   updateFolded: (nextFolded: boolean) => void;
   updateSummary: (nextSummary: string) => void;
