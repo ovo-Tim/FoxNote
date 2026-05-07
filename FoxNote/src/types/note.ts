@@ -41,6 +41,17 @@ export interface NoteSummary {
   tags: string[];
 }
 
+export interface NoteSearchHit {
+  id: string;
+  folder: string;
+  title: string;
+  date: string;
+  type: string;
+  tags: string[];
+  snippet: string;
+  score: number;
+}
+
 export interface FolderEntry {
   path: string;
   name: string;

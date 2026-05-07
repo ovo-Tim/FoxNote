@@ -6,6 +6,7 @@ use core::{
         NoteService, NoteTree, SaveNoteInput,
     },
     plugins::{InstallPluginInput, PluginEntry, PluginService},
+    search::{NoteSearchHit, SearchService},
     sync::{SyncService, SyncStatus},
     tags::{TagEntry, TagIndexService},
 };
@@ -17,6 +18,7 @@ struct AppState {
     tag_service: TagIndexService,
     sync_service: SyncService,
     plugin_service: PluginService,
+    search_service: SearchService,
     note_root: String,
     tag_bridge_path: String,
     sync_config_path: String,
@@ -36,19 +38,23 @@ impl AppState {
         let sync_config_path = sync_service.config_path_string();
         let plugin_service = PluginService::new(&note_root).map_err(|error| error.to_string())?;
         let plugin_config_path = plugin_service.config_path_string();
+        let search_index_path = app_data_dir.join("tantivy-search");
+        let search_service =
+            SearchService::new(search_index_path).map_err(|error| error.to_string())?;
 
         let tag_db_path = app_data_dir.join("tag-index.sqlite3");
         let tag_bridge_path = note_root.join("tags-index.toml");
         let tag_service = TagIndexService::new(tag_db_path, &tag_bridge_path)
             .map_err(|error| error.to_string())?;
 
-        sync_tag_index_from_notes(&note_service, &tag_service)?;
+        sync_indexes_from_notes(&note_service, &tag_service, &search_service)?;
 
         Ok(Self {
             note_service,
             tag_service,
             sync_service,
             plugin_service,
+            search_service,
             note_root: path_to_string(&note_root),
             tag_bridge_path: path_to_string(&tag_bridge_path),
             sync_config_path,
@@ -74,6 +80,24 @@ fn sync_tag_index_from_notes(
     tag_service
         .replace_all(&note_entries)
         .map_err(|error| format!("failed to rebuild tag index from notes: {error}"))
+}
+
+fn sync_search_index_from_notes(
+    note_service: &NoteService,
+    search_service: &SearchService,
+) -> Result<(), String> {
+    search_service
+        .rebuild_from_notes(note_service)
+        .map_err(|error| format!("failed to rebuild search index from notes: {error}"))
+}
+
+fn sync_indexes_from_notes(
+    note_service: &NoteService,
+    tag_service: &TagIndexService,
+    search_service: &SearchService,
+) -> Result<(), String> {
+    sync_tag_index_from_notes(note_service, tag_service)?;
+    sync_search_index_from_notes(note_service, search_service)
 }
 
 #[tauri::command]
@@ -127,7 +151,11 @@ fn rename_note_folder(
         .rename_folder(&path, &name)
         .map_err(|error| error.to_string())?;
 
-    sync_tag_index_from_notes(&state.note_service, &state.tag_service)?;
+    sync_indexes_from_notes(
+        &state.note_service,
+        &state.tag_service,
+        &state.search_service,
+    )?;
 
     Ok(renamed)
 }
@@ -139,7 +167,11 @@ fn delete_note_folder(state: tauri::State<AppState>, path: String) -> Result<(),
         .delete_folder(&path)
         .map_err(|error| error.to_string())?;
 
-    sync_tag_index_from_notes(&state.note_service, &state.tag_service)
+    sync_indexes_from_notes(
+        &state.note_service,
+        &state.tag_service,
+        &state.search_service,
+    )
 }
 
 #[tauri::command]
@@ -156,6 +188,11 @@ fn create_note(
     state
         .tag_service
         .upsert_note_tags(&record.id, &record.document.tags)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .search_service
+        .upsert_note_record(&record)
         .map_err(|error| error.to_string())?;
 
     Ok(record)
@@ -185,6 +222,11 @@ fn save_note(
         .upsert_note_tags(&record.id, &record.document.tags)
         .map_err(|error| error.to_string())?;
 
+    state
+        .search_service
+        .upsert_note_record(&record)
+        .map_err(|error| error.to_string())?;
+
     Ok(record)
 }
 
@@ -198,6 +240,24 @@ fn delete_note(state: tauri::State<AppState>, id: String) -> Result<(), String> 
     state
         .tag_service
         .remove_note(&id)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .search_service
+        .remove_note(&id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn search_notes(
+    state: tauri::State<AppState>,
+    query: String,
+    tag_path: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<NoteSearchHit>, String> {
+    state
+        .search_service
+        .search(&query, tag_path.as_deref(), limit.unwrap_or(80))
         .map_err(|error| error.to_string())
 }
 
@@ -308,26 +368,47 @@ fn set_sync_remote_url(
 
 #[tauri::command]
 fn run_sync_now(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
-    state
+    let status = state
         .sync_service
         .sync_now()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    sync_indexes_from_notes(
+        &state.note_service,
+        &state.tag_service,
+        &state.search_service,
+    )?;
+    Ok(status)
 }
 
 #[tauri::command]
 fn run_pull_only(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
-    state
+    let status = state
         .sync_service
         .pull_only()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    sync_indexes_from_notes(
+        &state.note_service,
+        &state.tag_service,
+        &state.search_service,
+    )?;
+    Ok(status)
 }
 
 #[tauri::command]
 fn run_pull_then_push(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
-    state
+    let status = state
         .sync_service
         .pull_then_push()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    sync_indexes_from_notes(
+        &state.note_service,
+        &state.tag_service,
+        &state.search_service,
+    )?;
+    Ok(status)
 }
 
 #[tauri::command]
@@ -356,18 +437,32 @@ fn resolve_sync_conflict(
     note_id: String,
     use_local: bool,
 ) -> Result<SyncStatus, String> {
-    state
+    let status = state
         .sync_service
         .resolve_conflict(&note_id, use_local)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    sync_indexes_from_notes(
+        &state.note_service,
+        &state.tag_service,
+        &state.search_service,
+    )?;
+    Ok(status)
 }
 
 #[tauri::command]
 fn finalize_sync_conflicts(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
-    state
+    let status = state
         .sync_service
         .finalize_conflicts()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    sync_indexes_from_notes(
+        &state.note_service,
+        &state.tag_service,
+        &state.search_service,
+    )?;
+    Ok(status)
 }
 
 #[tauri::command]
@@ -433,6 +528,7 @@ pub fn run() {
             load_note,
             save_note,
             delete_note,
+            search_notes,
             export_note_typst,
             save_note_image_attachment,
             load_note_image_attachment,

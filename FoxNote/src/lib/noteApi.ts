@@ -6,6 +6,7 @@ import type {
   NoteAttachmentPayload,
   NoteDocument,
   NoteRecord,
+  NoteSearchHit,
   PluginEntry,
   SyncStatus,
   TagEntry,
@@ -96,6 +97,14 @@ export async function getPluginConfigPath(): Promise<string> {
 
 export async function listTags(): Promise<TagEntry[]> {
   return invoke<TagEntry[]>("list_tags");
+}
+
+export async function searchNotes(
+  query: string,
+  tagPath?: string,
+  limit = 80,
+): Promise<NoteSearchHit[]> {
+  return invoke<NoteSearchHit[]>("search_notes", { query, tagPath, limit });
 }
 
 export async function listNoteIdsForTag(tag: string): Promise<string[]> {

@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import NoteEditorPanel from "./components/NoteEditorPanel.vue";
 import NoteTreePanel from "./components/NoteTreePanel.vue";
 import PluginsPanel from "./components/PluginsPanel.vue";
+import SearchPage from "./components/SearchPage.vue";
 import SyncPanel from "./components/SyncPanel.vue";
 import { useTagFilter } from "./composables/useTagFilter";
 import {
@@ -37,7 +38,15 @@ import {
   setSyncRemoteUrl,
   installPlugin,
 } from "./lib/noteApi";
-import type { InstallPluginInput, NoteDocument, NoteRecord, NoteSummary, NoteTree, PluginEntry, SyncStatus } from "./types/note";
+import type {
+  InstallPluginInput,
+  NoteDocument,
+  NoteRecord,
+  NoteSummary,
+  NoteTree,
+  PluginEntry,
+  SyncStatus,
+} from "./types/note";
 
 const tree = ref<NoteTree>({ folders: [], notes: [] });
 const selectedNote = ref<NoteRecord | null>(null);
@@ -68,7 +77,6 @@ const pendingDeleteFolderName = ref("");
 const pendingDeleteFolderPaths = ref<string[]>([]);
 const pendingDeleteFolderNames = ref<string[]>([]);
 const activeView = ref<"notes" | "settings" | "search" | "plugins">("notes");
-const searchViewQuery = ref("");
 const plugins = ref<PluginEntry[]>([]);
 const notesWorkspaceRef = ref<HTMLElement | null>(null);
 const sidebarWidth = ref(300);
@@ -188,20 +196,6 @@ const selectedNoteTomlPath = computed(() => {
   return `${folder}/note.toml`;
 });
 
-const searchResults = computed(() => {
-  const query = searchViewQuery.value.trim().toLowerCase();
-  if (!query) {
-    return [] as NoteSummary[];
-  }
-
-  return tree.value.notes
-    .filter((note) => {
-      const text = [note.title, note.folder, note.date, note.tags.join(" "), note.type].join(" ").toLowerCase();
-      return text.includes(query);
-    })
-    .sort((left, right) => left.title.localeCompare(right.title));
-});
-
 const notesWorkspaceStyle = computed(() => {
   const clamped = clampSidebarWidth(sidebarWidth.value);
   if (sidebarCollapsed.value) {
@@ -256,6 +250,7 @@ async function refreshTree() {
         selectedNote.value = null;
       }
     }
+
   } catch (reason) {
     error.value = toErrorMessage(reason);
   } finally {
@@ -1196,23 +1191,7 @@ function startSidebarResize(event: MouseEvent) {
               @remove="handleRemovePlugin" />
           </section>
 
-          <section v-else class="search-view">
-            <header class="search-header">
-              <h2>Search Notes</h2>
-              <p>Find notes by title, folder, tag, date, or type.</p>
-            </header>
-            <v-text-field v-model="searchViewQuery" density="comfortable" variant="outlined" hide-details
-              prepend-inner-icon="mdi-magnify" placeholder="Search notes..." />
-
-            <div class="search-results" v-if="searchViewQuery.trim()">
-              <button v-for="note in searchResults" :key="`search-${note.id}`" type="button" class="result-row"
-                @click="openNoteFromSearch(note.id)">
-                <span class="result-title">{{ note.title }}</span>
-                <span class="result-meta">{{ note.folder || 'root' }} · {{ note.date }}</span>
-              </button>
-              <p v-if="searchResults.length === 0" class="search-empty">No matching notes.</p>
-            </div>
-          </section>
+          <SearchPage v-else :tags="tags" @open-note="openNoteFromSearch" />
 
           <footer class="footer" style="display: none;">
             <span>Storage root: <code>{{ noteStorageRoot || 'loading...' }}</code></span>
@@ -1452,62 +1431,6 @@ function startSidebarResize(event: MouseEvent) {
   padding: 0.75rem 0.9rem;
 }
 
-.search-view {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 0.85rem 0.95rem;
-}
-
-.search-header h2 {
-  margin: 0;
-  color: var(--fox-text-strong);
-}
-
-.search-header p {
-  margin: 0.2rem 0 0.7rem;
-  color: var(--fox-text-muted);
-}
-
-.search-results {
-  margin-top: 0.65rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.28rem;
-}
-
-.result-row {
-  width: 100%;
-  border: 1px solid var(--fox-border);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--fox-surface) 90%, black 10%);
-  color: var(--fox-text-body);
-  text-align: left;
-  padding: 0.5rem 0.65rem;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 0.12rem;
-}
-
-.result-row:hover {
-  background: color-mix(in srgb, var(--fox-chip) 78%, transparent 22%);
-}
-
-.result-title {
-  color: var(--fox-text-strong);
-  font-weight: 600;
-}
-
-.result-meta {
-  color: var(--fox-text-muted);
-  font-size: 0.82rem;
-}
-
-.search-empty {
-  color: var(--fox-text-muted);
-  margin: 0.35rem 0 0;
-}
 
 .sidebar-column {
   min-width: 0;
