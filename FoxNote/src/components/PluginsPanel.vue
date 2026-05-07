@@ -64,7 +64,7 @@ function isLocal(kind: PluginSourceKind): boolean {
     <header class="plugins-page-header">
       <div>
         <h2 class="plugins-page-title">Plugins</h2>
-        <p class="plugins-page-subtitle">Install trusted local or remote plugins to extend block types.</p>
+        <p class="plugins-page-subtitle">Install trusted local or remote plugins (can provide multiple block types).</p>
       </div>
       <v-btn size="small" variant="text" prepend-icon="mdi-refresh" :disabled="busy" @click="emit('refresh')">Refresh</v-btn>
     </header>

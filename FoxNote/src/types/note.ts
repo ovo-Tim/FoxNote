@@ -2,6 +2,9 @@ export interface NoteBlock {
   type: string;
   content?: string | null;
   path?: string | null;
+  level?: number | null;
+  folded?: boolean | null;
+  summary?: string | null;
 }
 
 export interface NoteDocument {

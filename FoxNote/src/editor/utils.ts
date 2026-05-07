@@ -1,4 +1,5 @@
 import type { NoteBlock } from "../types/note";
+import { getBlockPlugin } from "./plugins/registry";
 
 function safeInlineContent(block: NoteBlock): string {
   if (typeof block.content === "string") {
@@ -8,19 +9,9 @@ function safeInlineContent(block: NoteBlock): string {
 }
 
 export function blockPreviewText(block: NoteBlock): string {
-  if (block.type === "typst") {
-    const content = safeInlineContent(block);
-    if (content.trim().length === 0) {
-      return "Click to start writing typst content...";
-    }
-    return content;
-  }
-
-  if (block.type === "image") {
-    if (block.path?.trim()) {
-      return `[image] ${block.path}`;
-    }
-    return "[image] attachment missing";
+  const plugin = getBlockPlugin(block.type);
+  if (plugin?.previewText) {
+    return plugin.previewText(block);
   }
 
   if (block.path) {

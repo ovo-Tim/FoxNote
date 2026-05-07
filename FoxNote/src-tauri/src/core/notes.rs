@@ -43,6 +43,12 @@ pub struct NoteBlock {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl NoteBlock {
@@ -51,6 +57,9 @@ impl NoteBlock {
             block_type: "typst".to_string(),
             content: Some("= New Note\n\nStart writing here.".to_string()),
             path: None,
+            level: None,
+            folded: None,
+            summary: None,
         }
     }
 }
@@ -110,6 +119,9 @@ impl NoteDocument {
                 },
                 content: block.content,
                 path: block.path,
+                level: block.level.map(|value| value.clamp(1, 6)),
+                folded: block.folded,
+                summary: block.summary,
             })
             .collect();
 
@@ -783,11 +795,17 @@ mod tests {
                     block_type: "typst".to_string(),
                     content: Some("= Hello".to_string()),
                     path: None,
+                    level: None,
+                    folded: None,
+                    summary: None,
                 },
                 NoteBlock {
                     block_type: "canvas".to_string(),
                     content: None,
                     path: Some("./draw.svg".to_string()),
+                    level: None,
+                    folded: None,
+                    summary: None,
                 },
             ],
         };
@@ -816,6 +834,9 @@ mod tests {
             block_type: "canvas".to_string(),
             content: None,
             path: Some("./draw.svg".to_string()),
+            level: None,
+            folded: None,
+            summary: None,
         });
 
         let saved = service

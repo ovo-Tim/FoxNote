@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { saveNoteImageAttachment } from "../lib/noteApi";
-import ImageBlockCard from "./blocks/ImageBlockCard.vue";
-import TypstBlockCard from "./blocks/TypstBlockCard.vue";
 import UnsupportedBlockCard from "./blocks/UnsupportedBlockCard.vue";
-import { createDefaultBlockForType, listBlockPlugins } from "../editor/plugins/registry";
+import { createDefaultBlockForType, getBlockPlugin, listBlockPlugins } from "../editor/plugins/registry";
 import { cloneBlocks } from "../editor/utils";
 import type { NoteBlock, NoteDocument, NoteRecord } from "../types/note";
+import type { BlockRenderContext } from "../editor/plugins/types";
 
 const props = defineProps<{
   note: NoteRecord | null;
@@ -124,6 +123,70 @@ const selectedBlockSet = computed(() => {
   return new Set(selectedBlocks.value);
 });
 
+const hiddenBlockSet = computed(() => {
+  const hidden = new Set<number>();
+  const foldedLevels: number[] = [];
+
+  for (let index = 0; index < form.content.length; index += 1) {
+    const block = form.content[index];
+    if (!block) {
+      continue;
+    }
+
+    if (block.type === "title") {
+      const level = Math.min(6, Math.max(1, Number(block.level) || 1));
+      while (foldedLevels.length > 0 && level <= (foldedLevels[foldedLevels.length - 1] ?? 0)) {
+        foldedLevels.pop();
+      }
+
+      if (foldedLevels.length > 0) {
+        hidden.add(index);
+      }
+
+      if (Boolean(block.folded)) {
+        foldedLevels.push(level);
+      }
+      continue;
+    }
+
+    if (foldedLevels.length > 0) {
+      hidden.add(index);
+    }
+  }
+
+  return hidden;
+});
+
+const blockIndentLevelMap = computed(() => {
+  const levels = new Map<number, number>();
+  const stack: Array<{ level: number; depth: number }> = [];
+
+  for (let index = 0; index < form.content.length; index += 1) {
+    const block = form.content[index];
+    if (!block) {
+      continue;
+    }
+
+    if (block.type !== "title") {
+      const activeTitle = stack[stack.length - 1];
+      levels.set(index, activeTitle ? activeTitle.depth + 1 : 0);
+      continue;
+    }
+
+    const level = Math.min(6, Math.max(1, Number(block.level) || 1));
+    while (stack.length > 0 && level <= (stack[stack.length - 1]?.level ?? 0)) {
+      stack.pop();
+    }
+
+    const parent = stack[stack.length - 1];
+    const depth = parent ? parent.depth + 1 : 0;
+    levels.set(index, depth);
+    stack.push({ level, depth });
+  }
+
+  return levels;
+});
+
 const marqueeStyle = computed<Record<string, string>>(() => {
   const hiddenStyle: Record<string, string> = {
     display: "none",
@@ -225,9 +288,9 @@ function updateBlock(index: number, nextBlock: NoteBlock) {
   form.content = blocks;
 }
 
-function updateImageBlockPath(index: number, nextPath: string) {
+function updateBlockPath(index: number, nextPath: string) {
   const block = form.content[index];
-  if (!block || block.type !== "image") {
+  if (!block) {
     return;
   }
 
@@ -242,16 +305,201 @@ function updateImageBlockPath(index: number, nextPath: string) {
   });
 }
 
-function updateTypstBlock(index: number, value: string) {
+function updateBlockContent(index: number, nextValue: string) {
   const block = form.content[index];
-  if (!block || block.type !== "typst") {
+  if (!block) {
+    return;
+  }
+
+  const normalized = String(nextValue ?? "");
+  if ((block.content ?? "") === normalized) {
     return;
   }
 
   updateBlock(index, {
     ...block,
-    content: value,
+    content: normalized,
   });
+}
+
+function updateBlockLevel(index: number, nextLevel: number) {
+  const block = form.content[index];
+  if (!block) {
+    return;
+  }
+
+  const normalized = Math.min(6, Math.max(1, Math.round(Number(nextLevel) || 1)));
+  if (block.level === normalized) {
+    return;
+  }
+
+  updateBlock(index, {
+    ...block,
+    level: normalized,
+  });
+}
+
+function updateBlockFolded(index: number, nextFolded: boolean) {
+  const block = form.content[index];
+  if (!block) {
+    return;
+  }
+
+  const normalized = Boolean(nextFolded);
+  if (Boolean(block.folded) === normalized) {
+    return;
+  }
+
+  updateBlock(index, {
+    ...block,
+    folded: normalized,
+  });
+}
+
+function updateBlockSummary(index: number, nextSummary: string) {
+  const block = form.content[index];
+  if (!block) {
+    return;
+  }
+
+  const normalized = nextSummary;
+  if ((block.summary ?? "") === normalized) {
+    return;
+  }
+
+  updateBlock(index, {
+    ...block,
+    summary: normalized,
+  });
+}
+
+function buildBlockRenderContext(index: number, block: NoteBlock): BlockRenderContext {
+  return {
+    block,
+    note: props.note,
+    index,
+    editing: editingBlockIndex.value === index,
+    setEditing: () => setEditingBlock(index),
+    clearEditing: () => finishBlockEditing(index),
+    updateBlock: (nextBlock) => updateBlock(index, nextBlock),
+    updateContent: (nextValue) => {
+      if (block.type === "typst") {
+        onBlockInput(index, nextValue);
+        return;
+      }
+      updateBlockContent(index, nextValue);
+    },
+    updatePath: (nextPath) => updateBlockPath(index, nextPath),
+    updateLevel: (nextLevel) => updateBlockLevel(index, nextLevel),
+    updateFolded: (nextFolded) => updateBlockFolded(index, nextFolded),
+    updateSummary: (nextSummary) => updateBlockSummary(index, nextSummary),
+  };
+}
+
+function parseTypstTitleCandidate(content: string): { level: number; title: string; body: string } | null {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  let firstNonEmpty = -1;
+
+  for (let cursor = 0; cursor < lines.length; cursor += 1) {
+    if (lines[cursor]?.trim()) {
+      firstNonEmpty = cursor;
+      break;
+    }
+  }
+
+  if (firstNonEmpty < 0) {
+    return null;
+  }
+
+  const headingLine = lines[firstNonEmpty]?.trim() ?? "";
+  const match = headingLine.match(/^(={1,6})\s+(.+)$/);
+  if (!match) {
+    return null;
+  }
+
+  const title = (match[2] ?? "").trim();
+  if (!title) {
+    return null;
+  }
+
+  const remainingLines = lines.slice(firstNonEmpty + 1);
+  const body = remainingLines.join("\n").trim();
+  return {
+    level: (match[1] ?? "=").length,
+    title,
+    body,
+  };
+}
+
+function splitTypstHeadingBlock(index: number, content: string): boolean {
+  const block = form.content[index];
+  if (!block || block.type !== "typst") {
+    return false;
+  }
+
+  const parsed = parseTypstTitleCandidate(content);
+  if (!parsed) {
+    return false;
+  }
+
+  const blocks = cloneBlocks(form.content);
+  blocks[index] = {
+    type: "title",
+    level: parsed.level,
+    content: parsed.title,
+    folded: false,
+    summary: "",
+  };
+
+  if (parsed.body) {
+    blocks.splice(index + 1, 0, {
+      type: "typst",
+      content: parsed.body,
+    });
+  }
+
+  form.content = blocks;
+  closeSlashMenu();
+  closeActionMenu();
+  return true;
+}
+
+function finishBlockEditing(index: number) {
+  const block = form.content[index];
+  if (block?.type === "typst") {
+    splitTypstHeadingBlock(index, typeof block.content === "string" ? block.content : "");
+  }
+
+  if (editingBlockIndex.value === index) {
+    setEditingBlock(null);
+  }
+}
+
+function resolveBlockComponent(block: NoteBlock) {
+  return getBlockPlugin(block.type)?.renderer?.component ?? UnsupportedBlockCard;
+}
+
+function resolveBlockProps(index: number, block: NoteBlock): Record<string, unknown> {
+  const renderer = getBlockPlugin(block.type)?.renderer;
+  if (!renderer) {
+    return { block };
+  }
+
+  if (!renderer.props) {
+    return {};
+  }
+
+  return renderer.props(buildBlockRenderContext(index, block));
+}
+
+function resolveBlockListeners(index: number, block: NoteBlock): Record<string, (...args: any[]) => void> {
+  const renderer = getBlockPlugin(block.type)?.renderer;
+  if (!renderer || !renderer.on) {
+    return {};
+  }
+
+  return renderer.on(buildBlockRenderContext(index, block));
 }
 
 function setBlockElement(index: number, element: unknown) {
@@ -265,6 +513,17 @@ function setBlockElement(index: number, element: unknown) {
 
 function isBlockSelected(index: number): boolean {
   return selectedBlockSet.value.has(index);
+}
+
+function isBlockHidden(index: number): boolean {
+  return hiddenBlockSet.value.has(index);
+}
+
+function blockShellStyle(index: number): Record<string, string> {
+  const depth = blockIndentLevelMap.value.get(index) ?? 0;
+  return {
+    marginLeft: `${depth * 1.1}rem`,
+  };
 }
 
 function normalizeSelection(indices: number[]) {
@@ -360,10 +619,15 @@ function insertBlockAfter(index: number, blockType: string) {
 }
 
 function onBlockInput(index: number, nextValue: string) {
-  updateTypstBlock(index, nextValue);
+  const block = form.content[index];
+  if (!block) {
+    return;
+  }
 
-  if (nextValue.trim() === "/") {
-    updateTypstBlock(index, "");
+  updateBlockContent(index, nextValue);
+
+  if (block.type === "typst" && nextValue.trim() === "/") {
+    updateBlockContent(index, "");
     openSlashMenu(index);
   }
 }
@@ -435,7 +699,9 @@ function finishTitleEdit() {
 }
 
 function exitBlockEditMode() {
-  setEditingBlock(null);
+  if (editingBlockIndex.value !== null) {
+    finishBlockEditing(editingBlockIndex.value);
+  }
   clearSelection();
   closeSlashMenu();
   closeActionMenu();
@@ -611,7 +877,34 @@ function resolveTargetElement(target: EventTarget | null): HTMLElement | null {
 }
 
 function onKeydown(event: KeyboardEvent) {
-  if (!props.note || selectedBlocks.value.length === 0) {
+  if (!props.note) {
+    return;
+  }
+
+  const targetEl = resolveTargetElement(event.target);
+  const withinEditor = Boolean(targetEl && editorPaneRef.value?.contains(targetEl));
+
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && withinEditor) {
+    event.preventDefault();
+
+    if (editingBlockIndex.value !== null) {
+      finishBlockEditing(editingBlockIndex.value);
+    }
+
+    if (titleEditing.value) {
+      finishTitleEdit();
+    }
+
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
+    closeSlashMenu();
+    closeActionMenu();
+    return;
+  }
+
+  if (selectedBlocks.value.length === 0) {
     return;
   }
 
@@ -645,6 +938,34 @@ function insertTypstBlockFromPaste(text: string) {
   const blocks = cloneBlocks(form.content);
   const baseIndex = selectedBlocks.value[selectedBlocks.value.length - 1] ?? form.content.length - 1;
   const insertIndex = Math.max(0, Math.min(blocks.length, baseIndex + 1));
+
+  const parsedTitle = parseTypstTitleCandidate(pasted);
+  if (parsedTitle) {
+    blocks.splice(insertIndex, 0, {
+      type: "title",
+      level: parsedTitle.level,
+      content: parsedTitle.title,
+      folded: false,
+      summary: "",
+    });
+
+    if (parsedTitle.body) {
+      blocks.splice(insertIndex + 1, 0, {
+        type: "typst",
+        content: parsedTitle.body,
+      });
+      form.content = blocks;
+      selectOnly(insertIndex + 1);
+      setEditingBlock(insertIndex + 1);
+    } else {
+      form.content = blocks;
+      selectOnly(insertIndex);
+      setEditingBlock(insertIndex);
+    }
+    closeSlashMenu();
+    closeActionMenu();
+    return;
+  }
 
   blocks.splice(insertIndex, 0, {
     type: "typst",
@@ -874,6 +1195,18 @@ watch(
   },
 );
 
+watch(hiddenBlockSet, (hidden) => {
+  const visibleSelection = selectedBlocks.value.filter((index) => !hidden.has(index));
+  if (visibleSelection.length !== selectedBlocks.value.length) {
+    normalizeSelection(visibleSelection);
+    selectionAnchor.value = visibleSelection[visibleSelection.length - 1] ?? null;
+  }
+
+  if (editingBlockIndex.value !== null && hidden.has(editingBlockIndex.value)) {
+    setEditingBlock(null);
+  }
+});
+
 onMounted(() => {
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("paste", onWindowPaste);
@@ -963,11 +1296,16 @@ watch(form, emitChange, { deep: true });
 
     <section ref="blockStackRef" class="block-stack" @click.self="exitBlockEditMode">
       <article v-for="(block, index) in form.content" :key="`${note.id}-block-${index}-${block.type}`"
+        v-show="!isBlockHidden(index)"
         :ref="(el) => setBlockElement(index, el)" class="block-shell" :class="{
           selected: isBlockSelected(index),
           'is-adding-top': isDropTargetTop(index),
           'is-adding-bottom': isDropTargetBottom(index),
-        }" @mousedown="onBlockMouseDown(index, $event)">
+        }" :style="blockShellStyle(index)" @mousedown="onBlockMouseDown(index, $event)">
+
+        <component :is="resolveBlockComponent(block)" v-bind="resolveBlockProps(index, block)"
+          v-on="resolveBlockListeners(index, block)" />
+
         <div class="block-hover-actions" @click.stop>
           <v-menu :model-value="insertMenuIndex === index" location="bottom start" :close-on-content-click="false"
             @update:model-value="(value) => !value && closeSlashMenu()">
@@ -1015,18 +1353,6 @@ watch(form, emitChange, { deep: true });
             </div>
           </v-menu>
         </div>
-
-        <TypstBlockCard v-if="block.type === 'typst'"
-          :model-value="typeof block.content === 'string' ? block.content : ''" :editing="editingBlockIndex === index"
-          @focus="setEditingBlock(index)" @blur="setEditingBlock(null)"
-          @update-model-value="(value) => onBlockInput(index, value)" />
-
-        <ImageBlockCard v-else-if="block.type === 'image'" :note-id="note.id" :path="String(block.path ?? '')"
-          :editing="editingBlockIndex === index" @focus="setEditingBlock(index)"
-          @update-path="(path) => updateImageBlockPath(index, path)" />
-
-        <UnsupportedBlockCard v-else :block="block" />
-
       </article>
     </section>
 
@@ -1303,6 +1629,7 @@ watch(form, emitChange, { deep: true });
   transition: opacity 140ms ease, transform 140ms ease;
   pointer-events: none;
   z-index: 3;
+  margin-left: 0.5rem;
 }
 
 .block-shell:hover .block-hover-actions,
