@@ -1,7 +1,8 @@
 import type { BlockPlugin } from "./types";
+import { imageBlockPlugin } from "./image";
 import { typstBlockPlugin } from "./typst";
 
-const builtInPlugins: BlockPlugin[] = [typstBlockPlugin];
+const builtInPlugins: BlockPlugin[] = [typstBlockPlugin, imageBlockPlugin];
 
 const pluginMap = new Map<string, BlockPlugin>(
   builtInPlugins.map((plugin) => [plugin.type, plugin]),

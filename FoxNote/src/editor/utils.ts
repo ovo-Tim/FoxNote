@@ -16,6 +16,13 @@ export function blockPreviewText(block: NoteBlock): string {
     return content;
   }
 
+  if (block.type === "image") {
+    if (block.path?.trim()) {
+      return `[image] ${block.path}`;
+    }
+    return "[image] attachment missing";
+  }
+
   if (block.path) {
     return `[${block.type}] external content at ${block.path}`;
   }

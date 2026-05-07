@@ -1,7 +1,12 @@
 mod core;
 
 use core::{
-    notes::{FolderEntry, NoteDocument, NoteRecord, NoteService, NoteTree, SaveNoteInput},
+    notes::{
+        ExportTypstResult, FolderEntry, NoteAttachmentPayload, NoteDocument, NoteRecord,
+        NoteService, NoteTree, SaveNoteInput,
+    },
+    plugins::{InstallPluginInput, PluginEntry, PluginService},
+    sync::{SyncService, SyncStatus},
     tags::{TagEntry, TagIndexService},
 };
 use std::path::Path;
@@ -10,8 +15,12 @@ use tauri::Manager;
 struct AppState {
     note_service: NoteService,
     tag_service: TagIndexService,
+    sync_service: SyncService,
+    plugin_service: PluginService,
     note_root: String,
     tag_bridge_path: String,
+    sync_config_path: String,
+    plugin_config_path: String,
 }
 
 impl AppState {
@@ -23,6 +32,10 @@ impl AppState {
 
         let note_root = app_data_dir.join("notes");
         let note_service = NoteService::new(&note_root).map_err(|error| error.to_string())?;
+        let sync_service = SyncService::new(&note_root);
+        let sync_config_path = sync_service.config_path_string();
+        let plugin_service = PluginService::new(&note_root).map_err(|error| error.to_string())?;
+        let plugin_config_path = plugin_service.config_path_string();
 
         let tag_db_path = app_data_dir.join("tag-index.sqlite3");
         let tag_bridge_path = note_root.join("tags-index.toml");
@@ -34,8 +47,12 @@ impl AppState {
         Ok(Self {
             note_service,
             tag_service,
+            sync_service,
+            plugin_service,
             note_root: path_to_string(&note_root),
             tag_bridge_path: path_to_string(&tag_bridge_path),
+            sync_config_path,
+            plugin_config_path,
         })
     }
 }
@@ -67,6 +84,16 @@ fn get_note_storage_root(state: tauri::State<AppState>) -> String {
 #[tauri::command]
 fn get_tag_bridge_path(state: tauri::State<AppState>) -> String {
     state.tag_bridge_path.clone()
+}
+
+#[tauri::command]
+fn get_sync_config_path(state: tauri::State<AppState>) -> String {
+    state.sync_config_path.clone()
+}
+
+#[tauri::command]
+fn get_plugin_config_path(state: tauri::State<AppState>) -> String {
+    state.plugin_config_path.clone()
 }
 
 #[tauri::command]
@@ -175,6 +202,43 @@ fn delete_note(state: tauri::State<AppState>, id: String) -> Result<(), String> 
 }
 
 #[tauri::command]
+fn export_note_typst(
+    state: tauri::State<AppState>,
+    id: String,
+    output_dir: Option<String>,
+) -> Result<ExportTypstResult, String> {
+    state
+        .note_service
+        .export_note_typst(&id, output_dir.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_note_image_attachment(
+    state: tauri::State<AppState>,
+    id: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    state
+        .note_service
+        .save_note_image_attachment(&id, &mime_type, &bytes)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn load_note_image_attachment(
+    state: tauri::State<AppState>,
+    id: String,
+    path: String,
+) -> Result<NoteAttachmentPayload, String> {
+    state
+        .note_service
+        .load_note_image_attachment(&id, &path)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn list_tags(state: tauri::State<AppState>) -> Result<Vec<TagEntry>, String> {
     state
         .tag_service
@@ -215,6 +279,136 @@ fn rebuild_tag_index(state: tauri::State<AppState>) -> Result<Vec<TagEntry>, Str
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn get_sync_status(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .status()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn init_sync_repository(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .init_repo()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_sync_remote_url(
+    state: tauri::State<AppState>,
+    remote_url: String,
+) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .set_remote(&remote_url)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_sync_now(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .sync_now()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_pull_only(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .pull_only()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_pull_then_push(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .pull_then_push()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_commit_only(state: tauri::State<AppState>, message: String) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .commit_only(&message)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_auto_sync(
+    state: tauri::State<AppState>,
+    enabled: bool,
+    interval_sec: u64,
+) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .set_auto_sync(enabled, interval_sec)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn resolve_sync_conflict(
+    state: tauri::State<AppState>,
+    note_id: String,
+    use_local: bool,
+) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .resolve_conflict(&note_id, use_local)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn finalize_sync_conflicts(state: tauri::State<AppState>) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .finalize_conflicts()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_plugins(state: tauri::State<AppState>) -> Result<Vec<PluginEntry>, String> {
+    state
+        .plugin_service
+        .list_plugins()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn install_plugin(
+    state: tauri::State<AppState>,
+    input: InstallPluginInput,
+) -> Result<PluginEntry, String> {
+    state
+        .plugin_service
+        .install_plugin(input)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_plugin_enabled(
+    state: tauri::State<AppState>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<PluginEntry, String> {
+    state
+        .plugin_service
+        .set_enabled(&plugin_id, enabled)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn remove_plugin(state: tauri::State<AppState>, plugin_id: String) -> Result<(), String> {
+    state
+        .plugin_service
+        .remove_plugin(&plugin_id)
+        .map_err(|error| error.to_string())
+}
+
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -228,6 +422,7 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_note_storage_root,
             list_note_tree,
@@ -238,11 +433,30 @@ pub fn run() {
             load_note,
             save_note,
             delete_note,
+            export_note_typst,
+            save_note_image_attachment,
+            load_note_image_attachment,
             get_tag_bridge_path,
+            get_sync_config_path,
+            get_plugin_config_path,
             list_tags,
             list_note_ids_for_tag,
             import_tag_bridge,
-            rebuild_tag_index
+            rebuild_tag_index,
+            get_sync_status,
+            init_sync_repository,
+            set_sync_remote_url,
+            run_sync_now,
+            run_pull_only,
+            run_pull_then_push,
+            run_commit_only,
+            set_auto_sync,
+            resolve_sync_conflict,
+            finalize_sync_conflicts,
+            list_plugins,
+            install_plugin,
+            set_plugin_enabled,
+            remove_plugin
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

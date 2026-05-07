@@ -18,6 +18,17 @@ export interface NoteRecord {
   document: NoteDocument;
 }
 
+export interface ExportTypstResult {
+  exportDir: string;
+  exportFile: string;
+  attachmentCount: number;
+}
+
+export interface NoteAttachmentPayload {
+  mimeType: string;
+  bytes: number[];
+}
+
 export interface NoteSummary {
   id: string;
   folder: string;
@@ -41,4 +52,41 @@ export interface TagEntry {
   path: string;
   name: string;
   noteCount: number;
+}
+
+export type SyncPhase = "needs_setup" | "idle" | "syncing" | "conflict" | "error";
+
+export interface SyncConflict {
+  noteId: string;
+  files: string[];
+}
+
+export interface SyncStatus {
+  phase: SyncPhase;
+  repoInitialized: boolean;
+  remoteUrl?: string | null;
+  branch?: string | null;
+  autoSyncEnabled: boolean;
+  autoSyncIntervalSec: number;
+  lastSyncAt?: string | null;
+  message?: string | null;
+  conflicts: SyncConflict[];
+}
+
+export type PluginSourceKind = "local" | "remote";
+
+export interface PluginEntry {
+  id: string;
+  name: string;
+  sourceKind: PluginSourceKind;
+  source: string;
+  enabled: boolean;
+  installedAt: string;
+}
+
+export interface InstallPluginInput {
+  id: string;
+  name: string;
+  sourceKind: PluginSourceKind;
+  source: string;
 }

@@ -2,6 +2,7 @@ use super::tags::normalize_tag_list;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     ffi::OsStr,
     fs,
     path::{Component, Path, PathBuf},
@@ -28,6 +29,10 @@ pub enum NoteError {
     FolderAlreadyExists(String),
     #[error("note title cannot be empty")]
     EmptyTitle,
+    #[error("image data is empty")]
+    EmptyImageData,
+    #[error("attachment not found: {0}")]
+    AttachmentNotFound(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,6 +145,19 @@ pub struct FolderEntry {
 pub struct NoteTree {
     pub folders: Vec<FolderEntry>,
     pub notes: Vec<NoteSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportTypstResult {
+    pub export_dir: String,
+    pub export_file: String,
+    pub attachment_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteAttachmentPayload {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -325,6 +343,126 @@ impl NoteService {
         Ok(())
     }
 
+    pub fn export_note_typst(
+        &self,
+        note_id: &str,
+        output_dir: Option<&str>,
+    ) -> Result<ExportTypstResult, NoteError> {
+        let note_path = normalize_relative_path(note_id)?;
+        if note_path.as_os_str().is_empty() {
+            return Err(NoteError::InvalidPath(note_id.to_string()));
+        }
+
+        let note_absolute = self.resolve_relative_path(&note_path)?;
+        if !note_absolute.join(NOTE_FILE_NAME).is_file() {
+            return Err(NoteError::NoteNotFound(path_to_string(&note_path)));
+        }
+
+        let record = self.read_note_record(&note_path)?;
+        let export_root = output_dir
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.root_dir.join("_exports"));
+        fs::create_dir_all(&export_root)?;
+
+        let export_name = self.next_export_folder_name(&record.document.title, &export_root);
+        let export_dir = export_root.join(export_name);
+        fs::create_dir_all(&export_dir)?;
+
+        let typst_source = self.compose_typst_source(&record.document);
+        let export_file = export_dir.join("main.typ");
+        fs::write(&export_file, typst_source)?;
+
+        let attachment_count =
+            self.copy_note_attachments(&record.document, &note_absolute, &export_dir)?;
+
+        Ok(ExportTypstResult {
+            export_dir: path_to_string(&export_dir),
+            export_file: path_to_string(&export_file),
+            attachment_count,
+        })
+    }
+
+    pub fn save_note_image_attachment(
+        &self,
+        note_id: &str,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> Result<String, NoteError> {
+        if bytes.is_empty() {
+            return Err(NoteError::EmptyImageData);
+        }
+
+        let note_path = normalize_relative_path(note_id)?;
+        if note_path.as_os_str().is_empty() {
+            return Err(NoteError::InvalidPath(note_id.to_string()));
+        }
+
+        let note_absolute = self.resolve_relative_path(&note_path)?;
+        if !note_absolute.join(NOTE_FILE_NAME).is_file() {
+            return Err(NoteError::NoteNotFound(path_to_string(&note_path)));
+        }
+
+        let attachments_dir = note_absolute.join("attachments");
+        fs::create_dir_all(&attachments_dir)?;
+
+        let extension = extension_for_image_mime(mime_type);
+        let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+        let base_name = format!("pasted-{timestamp}");
+        let mut file_name = format!("{base_name}.{extension}");
+
+        for suffix in 1..1000 {
+            if !attachments_dir.join(&file_name).exists() {
+                break;
+            }
+            file_name = format!("{base_name}-{suffix}.{extension}");
+        }
+
+        let absolute_file = attachments_dir.join(&file_name);
+        fs::write(absolute_file, bytes)?;
+
+        let relative = PathBuf::from("attachments").join(file_name);
+        Ok(path_to_string(&relative))
+    }
+
+    pub fn load_note_image_attachment(
+        &self,
+        note_id: &str,
+        path: &str,
+    ) -> Result<NoteAttachmentPayload, NoteError> {
+        let note_path = normalize_relative_path(note_id)?;
+        if note_path.as_os_str().is_empty() {
+            return Err(NoteError::InvalidPath(note_id.to_string()));
+        }
+
+        let note_absolute = self.resolve_relative_path(&note_path)?;
+        if !note_absolute.join(NOTE_FILE_NAME).is_file() {
+            return Err(NoteError::NoteNotFound(path_to_string(&note_path)));
+        }
+
+        let relative = normalize_relative_path(path)?;
+        if relative.as_os_str().is_empty() {
+            return Err(NoteError::InvalidPath(path.to_string()));
+        }
+
+        let absolute = note_absolute.join(&relative);
+        if !absolute.is_file() {
+            return Err(NoteError::AttachmentNotFound(path_to_string(&relative)));
+        }
+
+        let bytes = fs::read(&absolute)?;
+        let mime_type = mime_for_image_extension(
+            absolute
+                .extension()
+                .and_then(OsStr::to_str)
+                .unwrap_or_default(),
+        )
+        .to_string();
+
+        Ok(NoteAttachmentPayload { mime_type, bytes })
+    }
+
     fn collect_tree(&self, relative: &Path, tree: &mut NoteTree) -> Result<(), NoteError> {
         let current = self.resolve_relative_path(relative)?;
 
@@ -442,6 +580,100 @@ impl NoteService {
 
         format!("{}-fallback", base)
     }
+
+    fn next_export_folder_name(&self, title: &str, export_root: &Path) -> String {
+        let slug = slugify_title(title);
+        let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+        let base = format!("{}-{}", slug, timestamp);
+
+        if !export_root.join(&base).exists() {
+            return base;
+        }
+
+        for suffix in 1..1000 {
+            let candidate = format!("{}-{}", base, suffix);
+            if !export_root.join(&candidate).exists() {
+                return candidate;
+            }
+        }
+
+        format!("{}-fallback", base)
+    }
+
+    fn compose_typst_source(&self, document: &NoteDocument) -> String {
+        let mut sections = Vec::new();
+
+        for block in &document.content {
+            if block.block_type == "typst" {
+                if let Some(content) = block
+                    .content
+                    .as_ref()
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+                {
+                    sections.push(content.to_string());
+                }
+                continue;
+            }
+
+            if let Some(path) = block
+                .path
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                sections.push(format!("// attachment: {path}"));
+            }
+        }
+
+        if sections.is_empty() {
+            return format!("= {}\n", document.title);
+        }
+
+        sections.join("\n\n") + "\n"
+    }
+
+    fn copy_note_attachments(
+        &self,
+        document: &NoteDocument,
+        note_absolute: &Path,
+        export_dir: &Path,
+    ) -> Result<usize, NoteError> {
+        let mut copied = 0;
+        let mut seen = HashSet::new();
+
+        for block in &document.content {
+            let Some(raw_path) = block
+                .path
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            let relative = normalize_relative_path(raw_path)?;
+            let relative_key = path_to_string(&relative);
+            if !seen.insert(relative_key) {
+                continue;
+            }
+
+            let source_path = note_absolute.join(&relative);
+            if !source_path.is_file() {
+                continue;
+            }
+
+            let target_path = export_dir.join(&relative);
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            fs::copy(source_path, target_path)?;
+            copied += 1;
+        }
+
+        Ok(copied)
+    }
 }
 
 fn current_date() -> String {
@@ -506,6 +738,32 @@ fn sanitize_path_segment(raw: &str) -> Option<String> {
 
 fn slugify_title(raw: &str) -> String {
     sanitize_path_segment(raw).unwrap_or_else(|| "note".to_string())
+}
+
+fn extension_for_image_mime(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        "image/heic" => "heic",
+        "image/heif" => "heif",
+        _ => "png",
+    }
+}
+
+fn mime_for_image_extension(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        _ => "image/png",
+    }
 }
 
 #[cfg(test)]

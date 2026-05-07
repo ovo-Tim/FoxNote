@@ -64,7 +64,6 @@ async function renderPreview(source: string) {
   try {
     const svg = await renderTypstToSvgWithTheme(source, {
       darkMode: prefersDark.value,
-      pageWidth: "960pt",
     });
     if (ticket !== renderTicket) {
       return;
@@ -106,10 +105,9 @@ function onInput(value: string) {
     <template v-if="editing">
       <div class="editor-grid">
         <div class="pane">
-          <p class="pane-label">Typst</p>
           <v-textarea :model-value="modelValue" rows="3" max-rows="16" auto-grow hide-details density="compact"
             variant="solo-filled" class="code-input" @update:model-value="(value) => onInput(String(value ?? ''))"
-            @blur="emit('blur')" />
+            placeholder="Input typst code here..." @blur="emit('blur')" />
         </div>
 
         <div class="pane preview-pane">
@@ -139,21 +137,21 @@ function onInput(value: string) {
 <style scoped>
 .typst-card {
   border: 0;
-  border-radius: 8px;
-  background: var(--fox-surface);
-  padding: 0.2rem;
+  background: transparent;
+  padding: 0.06rem 0.1rem;
   cursor: pointer;
+  width: 100%;
+  min-width: 0;
 }
 
 .typst-card.editing {
   cursor: default;
-  border-color: color-mix(in srgb, var(--fox-primary) 38%, var(--fox-border) 62%);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fox-primary) 28%, transparent 72%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fox-primary) 20%, transparent 80%);
 }
 
 .editor-grid {
   display: grid;
-  gap: 0.6rem;
+  gap: 0.5rem;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
@@ -174,18 +172,20 @@ function onInput(value: string) {
 }
 
 .preview-pane {
-  border: 1px solid var(--fox-border);
+  border: 1px solid color-mix(in srgb, var(--fox-border) 85%, transparent 15%);
   border-radius: 8px;
-  padding: 0.2rem;
+  padding: 0.18rem;
   background: color-mix(in srgb, var(--fox-surface) 84%, black 16%);
 }
 
 .preview-only {
   min-height: 0;
+  width: 100%;
+  min-width: 0;
 }
 
 .preview-sheet {
-  border-radius: 8px;
+  /* border-radius: 8px; */
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -219,6 +219,10 @@ function onInput(value: string) {
 
 .preview-svg {
   padding: 0;
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .preview-sheet.is-dark .preview-svg :deep(svg) {

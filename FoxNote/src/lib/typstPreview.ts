@@ -43,8 +43,9 @@ export async function renderTypstToSvgWithTheme(
   const textColor = darkMode ? "#edf2ff" : "#111111";
 
   const themedSource = [
-    `#set page(width: ${pageWidth}, height: ${pageHeight}, margin: 0pt)`,
-    `#set text(size: 30pt, fill: rgb("${textColor}"))`,
+    `#set page(width: ${pageWidth}, height: ${pageHeight}, margin: 0.5pt)`,
+    `#set text(size: 20pt, fill: rgb("${textColor}"))`,
+    `#show math.equation: set text(top-edge: "bounds", bottom-edge: "bounds")`,
     "",
     source,
   ].join("\n");
