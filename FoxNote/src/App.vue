@@ -31,7 +31,8 @@ import {
   runSyncNow,
   runPullOnly,
   runPullThenPush,
-  runCommitOnly,
+  runCommitNoteOnly,
+  noteHasChanges,
   saveNote,
   setPluginEnabled,
   setAutoSync,
@@ -85,6 +86,12 @@ const sidebarResizing = ref(false);
 const workspaceWidth = ref(0);
 const noteInfoDialogOpen = ref(false);
 const exportingTypst = ref(false);
+const manualCommitMessage = ref("");
+const manualCommitBusy = ref(false);
+const selectedNoteHasChanges = ref(false);
+let noteChangeCheckToken = 0;
+const autoCommitEnabled = ref(true);
+const AUTO_COMMIT_STORAGE_KEY = "foxnote.autoCommitEnabled";
 
 const {
   activeTag,
@@ -196,6 +203,32 @@ const selectedNoteTomlPath = computed(() => {
   return `${folder}/note.toml`;
 });
 
+const canCommitCurrentNote = computed(() => {
+  return Boolean(selectedNoteId.value) && selectedNoteHasChanges.value && !manualCommitBusy.value;
+});
+
+function currentNoteTitle(): string {
+  const loadedTitle = selectedNote.value?.document.title?.trim();
+  if (loadedTitle) {
+    return loadedTitle;
+  }
+
+  const treeTitle = tree.value.notes.find((note) => note.id === selectedNoteId.value)?.title?.trim();
+  if (treeTitle) {
+    return treeTitle;
+  }
+
+  return "note";
+}
+
+function defaultCommitMessage(): string {
+  return `Update note ${currentNoteTitle()}`;
+}
+
+function resetManualCommitMessage() {
+  manualCommitMessage.value = defaultCommitMessage();
+}
+
 const notesWorkspaceStyle = computed(() => {
   const clamped = clampSidebarWidth(sidebarWidth.value);
   if (sidebarCollapsed.value) {
@@ -286,13 +319,17 @@ async function refreshSyncStatus() {
 }
 
 async function selectNote(id: string) {
-  if (selectedNoteId.value && selectedNoteId.value !== id) {
+  const previousNoteId = selectedNoteId.value;
+  if (autoCommitEnabled.value && previousNoteId && previousNoteId !== id) {
     const previousTitle = selectedNote.value?.document.title?.trim() || "";
     const commitMessage = previousTitle ? `Update note ${previousTitle}` : "Update note";
     try {
-      const commitStatus = await runCommitOnly(commitMessage);
-      if (commitStatus.message && commitStatus.message !== "No changes to commit") {
-        notice.value = commitStatus.message;
+      const previousHasChanges = await noteHasChanges(previousNoteId);
+      if (previousHasChanges) {
+        const commitStatus = await runCommitNoteOnly(previousNoteId, commitMessage);
+        if (commitStatus.message && commitStatus.message !== "No changes to commit") {
+          notice.value = commitStatus.message;
+        }
       }
     } catch {
       // Keep note navigation resilient even if auto-commit fails.
@@ -304,8 +341,31 @@ async function selectNote(id: string) {
 
   try {
     selectedNote.value = await loadNote(id);
+    await refreshSelectedNoteChangeState(id);
   } catch (reason) {
     error.value = toErrorMessage(reason);
+  }
+}
+
+async function refreshSelectedNoteChangeState(targetNoteId = selectedNoteId.value) {
+  const noteId = targetNoteId.trim();
+  const token = noteChangeCheckToken + 1;
+  noteChangeCheckToken = token;
+
+  if (!noteId) {
+    selectedNoteHasChanges.value = false;
+    return;
+  }
+
+  try {
+    const hasChanges = await noteHasChanges(noteId);
+    if (token === noteChangeCheckToken && selectedNoteId.value === noteId) {
+      selectedNoteHasChanges.value = hasChanges;
+    }
+  } catch {
+    if (token === noteChangeCheckToken && selectedNoteId.value === noteId) {
+      selectedNoteHasChanges.value = false;
+    }
   }
 }
 
@@ -405,6 +465,7 @@ async function handleSave(document: NoteDocument) {
     await saveNote(selectedNoteId.value, document);
     await refreshTree();
     await refreshTags();
+    await refreshSelectedNoteChangeState();
   } catch (reason) {
     error.value = toErrorMessage(reason);
   }
@@ -447,6 +508,36 @@ async function handleExportSelectedNoteTypst() {
     error.value = toErrorMessage(reason);
   } finally {
     exportingTypst.value = false;
+  }
+}
+
+async function handleManualCommit() {
+  if (!selectedNoteId.value) {
+    error.value = "Select a note first.";
+    return;
+  }
+
+  if (!selectedNoteHasChanges.value) {
+    return;
+  }
+
+  manualCommitBusy.value = true;
+  error.value = "";
+
+  try {
+    const message = manualCommitMessage.value.trim() || defaultCommitMessage();
+    const commitStatus = await runCommitNoteOnly(selectedNoteId.value, message);
+    if (commitStatus.message) {
+      notice.value = commitStatus.message;
+    }
+    if (commitStatus.message !== "No changes to commit") {
+      resetManualCommitMessage();
+      selectedNoteHasChanges.value = false;
+    }
+  } catch (reason) {
+    error.value = toErrorMessage(reason);
+  } finally {
+    manualCommitBusy.value = false;
   }
 }
 
@@ -976,6 +1067,31 @@ watch(error, (message) => {
 });
 
 watch(
+  () => selectedNoteId.value,
+  () => {
+    resetManualCommitMessage();
+    if (!selectedNoteId.value) {
+      selectedNoteHasChanges.value = false;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => selectedNote.value?.document.title,
+  () => {
+    const current = manualCommitMessage.value.trim();
+    if (!current || current.startsWith("Update note ")) {
+      resetManualCommitMessage();
+    }
+  },
+);
+
+watch(autoCommitEnabled, (enabled) => {
+  localStorage.setItem(AUTO_COMMIT_STORAGE_KEY, enabled ? "1" : "0");
+});
+
+watch(
   () => [syncStatus.value?.autoSyncEnabled, syncStatus.value?.autoSyncIntervalSec],
   ([enabled, intervalSec]) => {
     clearAutoSyncTimer();
@@ -1013,6 +1129,13 @@ function toErrorMessage(reason: unknown): string {
 }
 
 onMounted(() => {
+  const persisted = localStorage.getItem(AUTO_COMMIT_STORAGE_KEY);
+  if (persisted === "0") {
+    autoCommitEnabled.value = false;
+  } else if (persisted === "1") {
+    autoCommitEnabled.value = true;
+  }
+
   syncSidebarConstraints();
   window.addEventListener("resize", syncSidebarConstraints);
   void bootstrap();
@@ -1139,19 +1262,40 @@ function startSidebarResize(event: MouseEvent) {
             <div class="page-note-banner-spacer" aria-hidden="true" />
             <h2 class="page-note-banner-title" :title="selectedNoteTitle">{{ selectedNoteTitle }}</h2>
             <div class="page-note-banner-actions">
-              <v-btn size="small" variant="text" prepend-icon="mdi-information-outline" :disabled="!selectedNote"
-                @click="showSelectedNoteInfo">
-                Show info
-              </v-btn>
-              <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-export" :disabled="!selectedNoteId"
-                :loading="exportingTypst" @click="handleExportSelectedNoteTypst">
-                Export
-              </v-btn>
+              <v-tooltip text="Commit message (Enter to commit)" location="bottom">
+                <template #activator="{ props }">
+                  <v-text-field v-bind="props" v-model="manualCommitMessage" class="commit-message-input"
+                    density="compact" variant="outlined" hide-details placeholder="Update note"
+                    :disabled="!selectedNoteId || manualCommitBusy" @keydown.enter.prevent="handleManualCommit" />
+                </template>
+              </v-tooltip>
+              <v-tooltip text="Commit" location="bottom">
+                <template #activator="{ props }">
+                  <v-btn v-bind="props" size="small" variant="flat" icon="mdi-source-commit"
+                    :color="canCommitCurrentNote ? 'primary' : undefined"
+                    :disabled="!canCommitCurrentNote"
+                    :loading="manualCommitBusy"
+                    @click="handleManualCommit" />
+                </template>
+              </v-tooltip>
+              <v-tooltip text="Show info" location="bottom">
+                <template #activator="{ props }">
+                  <v-btn v-bind="props" size="small" variant="text" icon="mdi-information-outline"
+                    :disabled="!selectedNote" @click="showSelectedNoteInfo" />
+                </template>
+              </v-tooltip>
+              <v-tooltip text="Export" location="bottom">
+                <template #activator="{ props }">
+                  <v-btn v-bind="props" size="small" color="primary" variant="flat" icon="mdi-export"
+                    :disabled="!selectedNoteId" :loading="exportingTypst" @click="handleExportSelectedNoteTypst" />
+                </template>
+              </v-tooltip>
             </div>
           </header>
 
           <div class="notice-stack" aria-live="polite">
-            <v-alert v-if="notice" type="success" variant="tonal" class="notice-row" closable @click:close="notice = ''">
+            <v-alert v-if="notice" type="success" variant="tonal" class="notice-row" closable
+              @click:close="notice = ''">
               {{ notice }}
             </v-alert>
 
@@ -1179,6 +1323,13 @@ function startSidebarResize(event: MouseEvent) {
           </section>
 
           <section v-else-if="activeView === 'settings'" class="settings-view">
+            <v-card class="settings-auto-commit-card">
+              <v-card-title>Commit</v-card-title>
+              <v-card-text>
+                <v-switch v-model="autoCommitEnabled" class="settings-auto-commit-switch" hide-details density="compact"
+                  inset label="Auto commit when switching notes" />
+              </v-card-text>
+            </v-card>
             <SyncPanel :status="syncStatus" :busy="syncBusy || busy" :config-path="syncConfigPath"
               @refresh="refreshSyncStatus" @init="handleInitSync" @set-remote="handleSetRemote"
               @sync-now="handleSyncNow" @set-auto-sync="handleSetAutoSync" @resolve-conflict="handleResolveConflict"
@@ -1377,8 +1528,7 @@ function startSidebarResize(event: MouseEvent) {
   position: sticky;
   top: 0;
   z-index: 12;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: 0.55rem;
   border-bottom: 1px solid var(--fox-border);
@@ -1388,7 +1538,7 @@ function startSidebarResize(event: MouseEvent) {
 }
 
 .page-note-banner-spacer {
-  min-height: 1px;
+  display: none;
 }
 
 .page-note-banner-title {
@@ -1396,18 +1546,24 @@ function startSidebarResize(event: MouseEvent) {
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--fox-text-strong);
-  max-width: min(58vw, 620px);
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-align: center;
+  text-align: left;
 }
 
 .page-note-banner-actions {
-  justify-self: end;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.commit-message-input {
+  width: clamp(180px, 26vw, 320px);
+  min-width: 0;
 }
 
 .workspace-grid {
@@ -1429,6 +1585,14 @@ function startSidebarResize(event: MouseEvent) {
   min-height: 0;
   overflow: auto;
   padding: 0.75rem 0.9rem;
+}
+
+.settings-auto-commit-card {
+  margin-bottom: 0.75rem;
+}
+
+.settings-auto-commit-switch {
+  margin: 0;
 }
 
 
@@ -1541,22 +1705,24 @@ function startSidebarResize(event: MouseEvent) {
   }
 
   .page-note-banner {
-    grid-template-columns: 1fr;
-    justify-items: stretch;
+    flex-wrap: wrap;
     padding: 0.45rem 0.5rem;
-  }
-
-  .page-note-banner-spacer {
-    display: none;
   }
 
   .page-note-banner-title {
     max-width: 100%;
+    flex-basis: 100%;
     text-align: left;
   }
 
   .page-note-banner-actions {
-    justify-self: start;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .commit-message-input {
+    width: 100%;
+    min-width: 0;
   }
 
   .footer {

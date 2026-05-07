@@ -352,6 +352,62 @@ impl SyncService {
         self.with_message(SyncPhase::Idle, "Commit completed")
     }
 
+    pub fn note_has_changes(&self, note_id: &str) -> Result<bool, SyncError> {
+        if !self.is_repo_initialized() {
+            return Ok(false);
+        }
+
+        let note_path = normalize_note_path(note_id);
+        if note_path.is_empty() {
+            return Ok(false);
+        }
+
+        let output = self.run_git_output(&["status", "--porcelain", "--", &note_path])?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+
+        let has_changes = !String::from_utf8_lossy(&output.stdout).trim().is_empty();
+        Ok(has_changes)
+    }
+
+    pub fn commit_note_only(&self, note_id: &str, message: &str) -> Result<SyncStatus, SyncError> {
+        if !self.is_repo_initialized() {
+            return Ok(self.with_message(SyncPhase::NeedsSetup, "Initialize repository first")?);
+        }
+
+        if !self.collect_conflicts()?.is_empty() {
+            return Ok(
+                self.with_message(SyncPhase::Conflict, "Resolve sync conflicts before commit")?
+            );
+        }
+
+        let note_path = normalize_note_path(note_id);
+        if note_path.is_empty() {
+            return self.with_message(SyncPhase::Idle, "No changes to commit");
+        }
+
+        self.run_git(&["add", "-A", "--", &note_path])?;
+        if !self.note_has_changes(&note_path)? {
+            return self.with_message(SyncPhase::Idle, "No changes to commit");
+        }
+
+        let normalized = message.trim();
+        let commit_message = if normalized.is_empty() {
+            "Update note"
+        } else {
+            normalized
+        };
+
+        self.run_git(&["commit", "-m", commit_message, "--", &note_path])?;
+
+        let mut runtime = self.runtime.lock().map_err(|_| SyncError::StatePoisoned)?;
+        runtime.last_sync_at = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        drop(runtime);
+
+        self.with_message(SyncPhase::Idle, "Commit completed")
+    }
+
     pub fn resolve_conflict(
         &self,
         note_id: &str,
@@ -587,4 +643,12 @@ fn note_id_from_conflict_path(path: &str) -> String {
     }
 
     normalized
+}
+
+fn normalize_note_path(note_id: &str) -> String {
+    note_id
+        .trim()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string()
 }

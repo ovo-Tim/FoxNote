@@ -147,6 +147,14 @@ export async function runCommitOnly(message: string): Promise<SyncStatus> {
   return invoke<SyncStatus>("run_commit_only", { message });
 }
 
+export async function runCommitNoteOnly(noteId: string, message: string): Promise<SyncStatus> {
+  return invoke<SyncStatus>("run_commit_note_only", { noteId, message });
+}
+
+export async function noteHasChanges(noteId: string): Promise<boolean> {
+  return invoke<boolean>("note_has_changes", { noteId });
+}
+
 export async function setAutoSync(enabled: boolean, intervalSec: number): Promise<SyncStatus> {
   return invoke<SyncStatus>("set_auto_sync", { enabled, intervalSec });
 }

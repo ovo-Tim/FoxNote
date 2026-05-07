@@ -420,6 +420,26 @@ fn run_commit_only(state: tauri::State<AppState>, message: String) -> Result<Syn
 }
 
 #[tauri::command]
+fn run_commit_note_only(
+    state: tauri::State<AppState>,
+    note_id: String,
+    message: String,
+) -> Result<SyncStatus, String> {
+    state
+        .sync_service
+        .commit_note_only(&note_id, &message)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn note_has_changes(state: tauri::State<AppState>, note_id: String) -> Result<bool, String> {
+    state
+        .sync_service
+        .note_has_changes(&note_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn set_auto_sync(
     state: tauri::State<AppState>,
     enabled: bool,
@@ -546,6 +566,8 @@ pub fn run() {
             run_pull_only,
             run_pull_then_push,
             run_commit_only,
+            run_commit_note_only,
+            note_has_changes,
             set_auto_sync,
             resolve_sync_conflict,
             finalize_sync_conflicts,
