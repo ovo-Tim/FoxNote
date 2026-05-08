@@ -7,7 +7,10 @@ use std::{
 use tantivy::{
     collector::TopDocs,
     query::{AllQuery, Query, QueryParser},
-    schema::{Field, Schema, SchemaBuilder, Value, STORED, STRING, TEXT},
+    schema::{
+        Field, IndexRecordOption, Schema, SchemaBuilder, TextFieldIndexing, TextOptions, Value,
+        STORED, STRING,
+    },
     Index, TantivyDocument, Term,
 };
 use thiserror::Error;
@@ -140,11 +143,16 @@ impl SearchService {
         &self,
         query: &str,
         tag_filter: Option<&str>,
+        include_tags: &[String],
+        exclude_tags: &[String],
+        match_all_includes: bool,
         limit: usize,
     ) -> Result<Vec<NoteSearchHit>, SearchError> {
         let trimmed_query = query.trim();
         let normalized_tag = tag_filter.map(str::trim).filter(|value| !value.is_empty());
-        if trimmed_query.is_empty() && normalized_tag.is_none() {
+        let has_include = include_tags.iter().any(|tag| !tag.trim().is_empty());
+        let has_exclude = exclude_tags.iter().any(|tag| !tag.trim().is_empty());
+        if trimmed_query.is_empty() && normalized_tag.is_none() && !has_include && !has_exclude {
             return Ok(Vec::new());
         }
 
@@ -179,6 +187,14 @@ impl SearchService {
                 if !matches_tag_filter(&tags, active_tag) {
                     continue;
                 }
+            }
+
+            if !matches_include_tags(&tags, include_tags, match_all_includes) {
+                continue;
+            }
+
+            if matches_exclude_tags(&tags, exclude_tags) {
+                continue;
             }
 
             hits.push(NoteSearchHit {
@@ -242,16 +258,24 @@ impl SearchService {
         fs::create_dir_all(&self.index_dir)?;
 
         let meta_path = self.index_dir.join("meta.json");
-        if meta_path.is_file() {
-            return Ok(Index::open_in_dir(&self.index_dir)?);
-        }
+        let index = if meta_path.is_file() {
+            Index::open_in_dir(&self.index_dir)?
+        } else {
+            Index::create_in_dir(&self.index_dir, build_schema())?
+        };
 
-        Ok(Index::create_in_dir(&self.index_dir, build_schema())?)
+        index
+            .tokenizers()
+            .register("jieba", tantivy_jieba::JiebaTokenizer {});
+        Ok(index)
     }
 
     fn recreate_index_with_fields(&self) -> Result<(Index, SearchFields), SearchError> {
         reset_directory(&self.index_dir)?;
         let index = Index::create_in_dir(&self.index_dir, build_schema())?;
+        index
+            .tokenizers()
+            .register("jieba", tantivy_jieba::JiebaTokenizer {});
         let fields = SearchFields::from_schema(&index.schema())?;
         Ok((index, fields))
     }
@@ -259,13 +283,26 @@ impl SearchService {
 
 fn build_schema() -> Schema {
     let mut builder = SchemaBuilder::new();
+
+    let text_indexed = TextOptions::default().set_indexing_options(
+        TextFieldIndexing::default()
+            .set_tokenizer("jieba")
+            .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+    );
+
+    let text_stored = TextOptions::default().set_stored().set_indexing_options(
+        TextFieldIndexing::default()
+            .set_tokenizer("jieba")
+            .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+    );
+
     builder.add_text_field(FIELD_NOTE_ID, STRING | STORED);
-    builder.add_text_field(FIELD_TITLE, TEXT | STORED);
-    builder.add_text_field(FIELD_FOLDER, TEXT | STORED);
+    builder.add_text_field(FIELD_TITLE, text_stored.clone());
+    builder.add_text_field(FIELD_FOLDER, text_stored.clone());
     builder.add_text_field(FIELD_DATE, STRING | STORED);
     builder.add_text_field(FIELD_NOTE_TYPE, STRING | STORED);
-    builder.add_text_field(FIELD_CONTENT, TEXT);
-    builder.add_text_field(FIELD_SNIPPET, TEXT | STORED);
+    builder.add_text_field(FIELD_CONTENT, text_indexed);
+    builder.add_text_field(FIELD_SNIPPET, text_stored.clone());
     builder.add_text_field(FIELD_TAG, STRING | STORED);
     builder.build()
 }
@@ -311,6 +348,36 @@ fn matches_tag_filter(tags: &[String], active_tag: &str) -> bool {
     let prefix = format!("{active_tag}/");
     tags.iter()
         .any(|tag| tag == active_tag || tag.starts_with(&prefix))
+}
+
+fn matches_include_tags(tags: &[String], include_tags: &[String], match_all: bool) -> bool {
+    let normalized = include_tags
+        .iter()
+        .map(|tag| tag.trim())
+        .filter(|tag| !tag.is_empty())
+        .collect::<Vec<&str>>();
+
+    if normalized.is_empty() {
+        return true;
+    }
+
+    if match_all {
+        normalized
+            .iter()
+            .all(|include| matches_tag_filter(tags, include))
+    } else {
+        normalized
+            .iter()
+            .any(|include| matches_tag_filter(tags, include))
+    }
+}
+
+fn matches_exclude_tags(tags: &[String], exclude_tags: &[String]) -> bool {
+    exclude_tags
+        .iter()
+        .map(|tag| tag.trim())
+        .filter(|tag| !tag.is_empty())
+        .any(|exclude| matches_tag_filter(tags, exclude))
 }
 
 fn field_text(document: &TantivyDocument, field: Field) -> String {

@@ -12,7 +12,9 @@ const emit = defineEmits<{
 }>();
 
 const searchViewQuery = ref("");
-const searchViewTagPath = ref("");
+const searchIncludeTags = ref<string[]>([]);
+const searchExcludeTags = ref<string[]>([]);
+const includeMode = ref<"all" | "any">("all");
 const searchViewLoading = ref(false);
 const searchViewResults = ref<NoteSearchHit[]>([]);
 const searchRequestToken = ref(0);
@@ -20,25 +22,31 @@ let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const tagToneColors = ["#ffba3d", "#ff7f3e", "#cbcbcb", "#43dfda", "#cf87ff"];
 
-interface SearchTagItem {
+interface SearchModeItem {
   title: string;
-  value: string;
-  path: string;
-  noteCount: number;
-  color: string;
-  isAll?: boolean;
+  value: "all" | "any";
 }
 
 const hasSearchQuery = computed(() => searchViewQuery.value.trim().length > 0);
-const activeSearchTag = computed(() => searchViewTagPath.value.trim());
-const hasSearchContext = computed(() => hasSearchQuery.value || activeSearchTag.value.length > 0);
+const hasIncludeTags = computed(() => searchIncludeTags.value.length > 0);
+const hasExcludeTags = computed(() => searchExcludeTags.value.length > 0);
+const hasSearchContext = computed(() => hasSearchQuery.value
+  || hasIncludeTags.value
+  || hasExcludeTags.value);
 
-const searchTagLabel = computed(() => {
-  if (!activeSearchTag.value) {
-    return "All tags in index";
+const searchContextLabel = computed(() => {
+  const parts: string[] = [];
+  if (hasSearchQuery.value) {
+    parts.push(`query: "${searchViewQuery.value.trim()}"`);
   }
-  const matched = props.tags.find((tag) => tag.path === activeSearchTag.value);
-  return matched ? matched.path : activeSearchTag.value;
+  if (hasIncludeTags.value) {
+    const mode = includeMode.value === "all" ? "all of" : "any of";
+    parts.push(`must have ${mode} [${searchIncludeTags.value.join(", ")}]`);
+  }
+  if (hasExcludeTags.value) {
+    parts.push(`must not have [${searchExcludeTags.value.join(", ")}]`);
+  }
+  return parts.join(" · ");
 });
 
 function tagToneColor(tagPath: string): string {
@@ -50,24 +58,28 @@ function tagToneColor(tagPath: string): string {
   return tagToneColors[Math.abs(hash) % tagToneColors.length] ?? "#cbcbcb";
 }
 
-const searchTagItems = computed<SearchTagItem[]>(() => {
-  const items: SearchTagItem[] = props.tags.map((tag) => ({
-    title: `${tag.path} (${tag.noteCount})`,
-    value: tag.path,
-    path: tag.path,
-    noteCount: tag.noteCount,
-    color: tagToneColor(tag.path),
-  }));
+const includeModeItems: SearchModeItem[] = [
+  { title: "Has all selected tags", value: "all" },
+  { title: "Has any selected tag", value: "any" },
+];
 
-  return [{ title: "All tags", value: "", path: "All tags", noteCount: 0, color: "#687289", isAll: true }, ...items];
-});
+const includeTagItems = computed(() => props.tags.map((tag) => ({
+  title: `${tag.path} (${tag.noteCount})`,
+  value: tag.path,
+  path: tag.path,
+  color: tagToneColor(tag.path),
+})));
+
+const excludeTagItems = computed(() => includeTagItems.value);
 
 async function runSearchViewQuery() {
   const token = ++searchRequestToken.value;
   const query = searchViewQuery.value.trim();
-  const tagPath = searchViewTagPath.value.trim();
+  const includeTags = [...new Set(searchIncludeTags.value.map((tag) => tag.trim()).filter(Boolean))];
+  const excludeTags = [...new Set(searchExcludeTags.value.map((tag) => tag.trim()).filter(Boolean))]
+    .filter((tag) => !includeTags.includes(tag));
 
-  if (!query && !tagPath) {
+  if (!query && includeTags.length === 0 && excludeTags.length === 0) {
     searchViewResults.value = [];
     searchViewLoading.value = false;
     return;
@@ -75,7 +87,14 @@ async function runSearchViewQuery() {
 
   searchViewLoading.value = true;
   try {
-    const results = await searchNotes(query, tagPath || undefined, 120);
+    const results = await searchNotes(
+      query,
+      undefined,
+      includeTags,
+      excludeTags,
+      includeMode.value === "all",
+      120,
+    );
     if (token === searchRequestToken.value) {
       searchViewResults.value = results;
     }
@@ -104,7 +123,9 @@ function scheduleSearchViewQuery(delayMs = 180) {
 
 function clearSearchViewContext() {
   searchViewQuery.value = "";
-  searchViewTagPath.value = "";
+  searchIncludeTags.value = [];
+  searchExcludeTags.value = [];
+  includeMode.value = "all";
   searchViewResults.value = [];
   searchViewLoading.value = false;
   searchRequestToken.value += 1;
@@ -118,7 +139,41 @@ watch(searchViewQuery, () => {
   scheduleSearchViewQuery();
 });
 
-watch(searchViewTagPath, () => {
+let syncingTagCrossrefs = false;
+
+watch(searchIncludeTags, () => {
+  if (syncingTagCrossrefs) {
+    return;
+  }
+  syncingTagCrossrefs = true;
+  const includes = new Set(searchIncludeTags.value);
+  const filteredExcludes = searchExcludeTags.value.filter((tag) => !includes.has(tag));
+  if (filteredExcludes.length !== searchExcludeTags.value.length) {
+    searchExcludeTags.value = filteredExcludes;
+  }
+  scheduleSearchViewQuery(0);
+  void Promise.resolve().then(() => {
+    syncingTagCrossrefs = false;
+  });
+});
+
+watch(searchExcludeTags, () => {
+  if (syncingTagCrossrefs) {
+    return;
+  }
+  syncingTagCrossrefs = true;
+  const excludes = new Set(searchExcludeTags.value);
+  const filteredIncludes = searchIncludeTags.value.filter((tag) => !excludes.has(tag));
+  if (filteredIncludes.length !== searchIncludeTags.value.length) {
+    searchIncludeTags.value = filteredIncludes;
+  }
+  scheduleSearchViewQuery(0);
+  void Promise.resolve().then(() => {
+    syncingTagCrossrefs = false;
+  });
+});
+
+watch(includeMode, () => {
   scheduleSearchViewQuery(0);
 });
 
@@ -155,30 +210,6 @@ onBeforeUnmount(() => {
         prepend-inner-icon="mdi-magnify"
         placeholder="Search title/content/folder..."
       />
-      <v-select
-        v-model="searchViewTagPath"
-        :items="searchTagItems"
-        item-title="title"
-        item-value="value"
-        density="comfortable"
-        variant="outlined"
-        hide-details
-        label="Tag filter"
-      >
-        <template #item="{ props: itemProps, item }">
-          <v-list-item v-bind="itemProps" :title="item.raw.title">
-            <template #prepend>
-              <span class="search-tag-dot" :style="{ backgroundColor: item.raw.color }" />
-            </template>
-          </v-list-item>
-        </template>
-        <template #selection="{ item }">
-          <span class="search-tag-selection">
-            <span class="search-tag-dot" :style="{ backgroundColor: item.raw.color }" />
-            <span>{{ item.raw.isAll ? "All tags" : item.raw.path }}</span>
-          </span>
-        </template>
-      </v-select>
       <v-btn
         variant="text"
         prepend-icon="mdi-close-circle-outline"
@@ -189,8 +220,75 @@ onBeforeUnmount(() => {
       </v-btn>
     </div>
 
+    <div class="search-tag-advanced">
+      <v-select
+        v-model="searchIncludeTags"
+        :items="includeTagItems"
+        item-title="title"
+        item-value="value"
+        density="comfortable"
+        variant="outlined"
+        hide-details
+        label="Must have tags"
+        multiple
+        chips
+        closable-chips
+      >
+        <template #item="{ props: itemProps, item }">
+          <v-list-item v-bind="itemProps" :title="item.raw.title">
+            <template #prepend>
+              <span class="search-tag-dot" :style="{ backgroundColor: item.raw.color }" />
+            </template>
+          </v-list-item>
+        </template>
+        <template #chip="{ item, props: chipProps }">
+          <v-chip v-bind="chipProps" :color="item.raw.color" variant="tonal" size="small">
+            {{ item.raw.path }}
+          </v-chip>
+        </template>
+      </v-select>
+
+      <v-select
+        v-model="includeMode"
+        :items="includeModeItems"
+        item-title="title"
+        item-value="value"
+        density="comfortable"
+        variant="outlined"
+        hide-details
+        label="Include mode"
+      />
+
+      <v-select
+        v-model="searchExcludeTags"
+        :items="excludeTagItems"
+        item-title="title"
+        item-value="value"
+        density="comfortable"
+        variant="outlined"
+        hide-details
+        label="Must not have tags"
+        multiple
+        chips
+        closable-chips
+      >
+        <template #item="{ props: itemProps, item }">
+          <v-list-item v-bind="itemProps" :title="item.raw.title">
+            <template #prepend>
+              <span class="search-tag-dot" :style="{ backgroundColor: item.raw.color }" />
+            </template>
+          </v-list-item>
+        </template>
+        <template #chip="{ item, props: chipProps }">
+          <v-chip v-bind="chipProps" :color="item.raw.color" variant="tonal" size="small">
+            {{ item.raw.path }}
+          </v-chip>
+        </template>
+      </v-select>
+    </div>
+
     <p v-if="hasSearchContext" class="search-context">
-      Tag scope: <strong>{{ searchTagLabel }}</strong>
+      {{ searchContextLabel }}
     </p>
 
     <div class="search-results" v-if="hasSearchContext">
@@ -233,7 +331,7 @@ onBeforeUnmount(() => {
 
 .search-controls {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.55rem;
   align-items: center;
 }
@@ -242,6 +340,14 @@ onBeforeUnmount(() => {
   margin: 0.55rem 0 0;
   color: var(--fox-text-muted);
   font-size: 0.86rem;
+}
+
+.search-tag-advanced {
+  margin-top: 0.55rem;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 240px) minmax(220px, 1fr);
+  gap: 0.55rem;
+  align-items: start;
 }
 
 .search-tag-selection {
@@ -322,6 +428,10 @@ onBeforeUnmount(() => {
   }
 
   .search-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .search-tag-advanced {
     grid-template-columns: 1fr;
   }
 }

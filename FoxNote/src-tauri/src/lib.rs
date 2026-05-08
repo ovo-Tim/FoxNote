@@ -253,11 +253,25 @@ fn search_notes(
     state: tauri::State<AppState>,
     query: String,
     tag_path: Option<String>,
+    include_tags: Option<Vec<String>>,
+    exclude_tags: Option<Vec<String>>,
+    match_all_includes: Option<bool>,
     limit: Option<usize>,
 ) -> Result<Vec<NoteSearchHit>, String> {
+    let include_tags = include_tags.unwrap_or_default();
+    let exclude_tags = exclude_tags.unwrap_or_default();
+    let match_all_includes = match_all_includes.unwrap_or(true);
+
     state
         .search_service
-        .search(&query, tag_path.as_deref(), limit.unwrap_or(80))
+        .search(
+            &query,
+            tag_path.as_deref(),
+            &include_tags,
+            &exclude_tags,
+            match_all_includes,
+            limit.unwrap_or(80),
+        )
         .map_err(|error| error.to_string())
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { renderTypstToPortableSvgWithTheme } from "../../lib/typstPreview";
+import { renderTypstToSvgWithTheme } from "../../lib/typstPreview";
 
 const props = defineProps<{
   modelValue: string;
@@ -66,7 +66,7 @@ async function renderPreview(source: string) {
 
   rendering.value = true;
   try {
-    const svg = await renderTypstToPortableSvgWithTheme(source, {
+    const svg = await renderTypstToSvgWithTheme(source, {
       darkMode: prefersDark.value,
     });
     if (ticket !== renderTicket) {

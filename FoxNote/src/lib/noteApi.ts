@@ -138,9 +138,19 @@ export async function listTags(): Promise<TagEntry[]> {
 export async function searchNotes(
   query: string,
   tagPath?: string,
+  includeTags?: string[],
+  excludeTags?: string[],
+  matchAllIncludes = true,
   limit = 80,
 ): Promise<NoteSearchHit[]> {
-  return invoke<NoteSearchHit[]>("search_notes", { query, tagPath, limit });
+  return invoke<NoteSearchHit[]>("search_notes", {
+    query,
+    tagPath,
+    includeTags,
+    excludeTags,
+    matchAllIncludes,
+    limit,
+  });
 }
 
 export async function listNoteIdsForTag(tag: string): Promise<string[]> {

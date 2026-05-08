@@ -1,6 +1,7 @@
 import { $typst } from "@myriaddreamin/typst.ts";
 import compilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm?url";
 import rendererWasmUrl from "@myriaddreamin/typst-ts-renderer/pkg/typst_ts_renderer_bg.wasm?url";
+import { preloadFontAssets } from "@myriaddreamin/typst.ts/dist/esm/options.init.mjs";
 
 let initialized = false;
 
@@ -27,7 +28,7 @@ function buildThemedSource(source: string, options: TypstRenderOptions = {}): st
 
   return [
     `#set page(width: ${pageWidth}, height: ${pageHeight}, margin: 0.5pt)`,
-    `#set text(size: 20pt, fill: rgb("${textColor}"))`,
+    `#set text(size: 20pt, fill: rgb("${textColor}"), font: ("Noto Serif CJK SC", "Libertinus Serif", "New Computer Modern", "DejaVu Sans Mono"))`,
     `#show math.equation: set text(top-edge: "bounds", bottom-edge: "bounds")`,
     "",
     source,
@@ -42,7 +43,8 @@ function ensureInitialized() {
   try {
     $typst.setCompilerInitOptions({
       getModule: () => compilerWasmUrl,
-    });
+      beforeBuild: [preloadFontAssets({ assets: ["text", "cjk"] })],
+    } as any);
   } catch (error) {
     if (!isAlreadyInitializedError(error)) {
       throw error;
