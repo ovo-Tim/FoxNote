@@ -10,7 +10,7 @@ use core::{
     sync::{SyncService, SyncStatus},
     tags::{TagEntry, TagIndexService},
 };
-use std::path::Path;
+use std::{fs, path::Path, process::Command};
 use tauri::Manager;
 
 struct AppState {
@@ -271,6 +271,56 @@ fn export_note_typst(
         .note_service
         .export_note_typst(&id, output_dir.as_deref())
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn write_export_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("output path cannot be empty".to_string());
+    }
+
+    let output = Path::new(trimmed);
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+    }
+
+    fs::write(output, bytes).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn compile_typst_to_pdf(input_path: String, output_path: String) -> Result<(), String> {
+    let input = input_path.trim();
+    let output = output_path.trim();
+
+    if input.is_empty() {
+        return Err("typst input path cannot be empty".to_string());
+    }
+    if output.is_empty() {
+        return Err("pdf output path cannot be empty".to_string());
+    }
+
+    let output_file = Path::new(output);
+    if let Some(parent) = output_file.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+    }
+
+    let status = Command::new("typst")
+        .arg("compile")
+        .arg(input)
+        .arg(output)
+        .status()
+        .map_err(|error| format!("failed to run typst compiler: {error}"))?;
+
+    if !status.success() {
+        return Err(format!("typst compile failed with status: {status}"));
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -584,6 +634,8 @@ pub fn run() {
             delete_note,
             search_notes,
             export_note_typst,
+            write_export_file,
+            compile_typst_to_pdf,
             save_note_image_attachment,
             load_note_image_attachment,
             save_note_attachment,

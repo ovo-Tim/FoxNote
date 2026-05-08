@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import NoteEditorPanel from "./components/NoteEditorPanel.vue";
 import NoteTreePanel from "./components/NoteTreePanel.vue";
 import PluginsPanel from "./components/PluginsPanel.vue";
 import SearchPage from "./components/SearchPage.vue";
 import SyncPanel from "./components/SyncPanel.vue";
 import { useTagFilter } from "./composables/useTagFilter";
+import { exportTypstWithPlugin } from "./editor/plugins/registry";
 import {
+  compileTypstToPdf,
   createNote,
   createNoteFolder,
   deleteNote,
   deleteNoteFolder,
-  exportNoteTypst,
+  writeExportFile,
   finalizeSyncConflicts,
   getPluginConfigPath,
   getSyncStatus,
@@ -86,6 +88,7 @@ const sidebarResizing = ref(false);
 const workspaceWidth = ref(0);
 const noteInfoDialogOpen = ref(false);
 const exportingTypst = ref(false);
+const exportingPdf = ref(false);
 const manualCommitMessage = ref("");
 const manualCommitBusy = ref(false);
 const selectedNoteHasChanges = ref(false);
@@ -223,6 +226,157 @@ function currentNoteTitle(): string {
 
 function defaultCommitMessage(): string {
   return `Update note ${currentNoteTitle()}`;
+}
+
+function sanitizeExportSegment(input: string, fallback: string): string {
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized || fallback;
+}
+
+function escapeTypstText(input: string): string {
+  return input.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function escapeTypstPath(input: string): string {
+  return input.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function splitOutputPath(path: string): { directory: string; fileName: string; stem: string } {
+  const normalized = path.replace(/\\/g, "/");
+  const slashIndex = normalized.lastIndexOf("/");
+  const directory = slashIndex >= 0 ? normalized.slice(0, slashIndex) : "";
+  const fileName = slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized;
+  const dotIndex = fileName.lastIndexOf(".");
+  const stem = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
+  return { directory, fileName, stem };
+}
+
+function buildPdfExportDocument(note: NoteRecord, bodyBlocks: string[]): string {
+  const title = note.document.title?.trim() || "Untitled Note";
+  const escapedTitle = escapeTypstText(title);
+  const escapedAuthor = escapeTypstText("FoxNote");
+  const date = note.document.date?.trim();
+  const escapedDate = date ? escapeTypstText(date) : "";
+  const tags = note.document.tags
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .map((tag) => `#box(inset: (x: 6pt, y: 3pt), stroke: rgb("#d0d7e2"), radius: 6pt)[${escapeTypstText(tag)}]`)
+    .join(" #h(6pt) ");
+
+  const lines = [
+    '#set page(margin: (x: 22mm, y: 18mm))',
+    '#set text(font: "New Computer Modern", size: 11pt, fill: rgb("#111827"))',
+    '#show image: set block(breakable: false)',
+    `#set document(title: "${escapedTitle}", author: "${escapedAuthor}")`,
+    `#let foxnote-meta(title, date, tags) = [`,
+    '  #align(center, text(weight: 700, size: 20pt)[#title])',
+    '  #v(8pt)',
+    '  #if date != none and date != "" [#align(center, text(size: 9pt, fill: rgb("#6b7280"))[#date]) #v(6pt)]',
+    '  #if tags != none and tags != () [#align(center)[#tags] #v(14pt)]',
+    '  #line(length: 100%, stroke: 0.6pt + rgb("#d5dbe5"))',
+    '  #v(14pt)',
+    ']',
+    `#foxnote-meta([${escapedTitle}], ${escapedDate ? `[${escapedDate}]` : 'none'}, ${tags ? `[${tags}]` : '()'})`,
+  ];
+
+  if (bodyBlocks.length > 0) {
+    lines.push(bodyBlocks.join("\n\n"));
+  }
+
+  return `${lines.join("\n\n")}\n`;
+}
+
+async function buildTypstExportPackage(note: NoteRecord, outputBasePath: string): Promise<{
+  packageDir: string;
+  assetsDir: string;
+  inputPath: string;
+  typstSource: string;
+  assetWrites: Map<string, { bytes: Uint8Array; mimeType: string }>;
+}> {
+  const { directory, stem } = splitOutputPath(outputBasePath);
+  const exportStem = sanitizeExportSegment(stem || note.document.title || "note", "note");
+  const packageDir = directory
+    ? `${directory}/${exportStem}.foxnote-export`
+    : `${exportStem}.foxnote-export`;
+  const assetsDir = `${packageDir}/assets`;
+  const inputPath = `${packageDir}/main.typ`;
+
+  const exportedBlocks = await Promise.all(
+    note.document.content.map((block, index) =>
+      exportTypstWithPlugin({
+        type: block.type,
+        block,
+        note,
+        index,
+      }),
+    ),
+  );
+
+  const bodyBlocks: string[] = [];
+  const assetWrites = new Map<string, { bytes: Uint8Array; mimeType: string }>();
+
+  for (const [index, exported] of exportedBlocks.entries()) {
+    const assets = exported.assets ?? [];
+    const assetPathMap = new Map<string, string>();
+
+    for (const asset of assets) {
+      const baseName = sanitizeExportSegment(asset.fileName, `asset-${index + 1}`);
+      let candidate = baseName;
+      let collision = 2;
+      while (assetWrites.has(candidate)) {
+        const dotIndex = baseName.lastIndexOf(".");
+        candidate = dotIndex > 0
+          ? `${baseName.slice(0, dotIndex)}-${collision}${baseName.slice(dotIndex)}`
+          : `${baseName}-${collision}`;
+        collision += 1;
+      }
+      assetWrites.set(candidate, {
+        bytes: asset.bytes,
+        mimeType: asset.mimeType,
+      });
+      assetPathMap.set(asset.fileName, candidate);
+    }
+
+    let typst = exported.typst.trim();
+    if (!typst) {
+      continue;
+    }
+
+    for (const [originalName, writtenName] of assetPathMap.entries()) {
+      const escapedOriginal = escapeTypstPath(originalName);
+      const escapedWritten = escapeTypstPath(`assets/${writtenName}`);
+      typst = typst.split(`"${escapedOriginal}"`).join(`"${escapedWritten}"`);
+    }
+
+    bodyBlocks.push(typst);
+  }
+
+  const typstSource = buildPdfExportDocument(note, bodyBlocks);
+  return {
+    packageDir,
+    assetsDir,
+    inputPath,
+    typstSource,
+    assetWrites,
+  };
+}
+
+async function writeTypstExportPackage(exportPackage: {
+  assetsDir: string;
+  inputPath: string;
+  typstSource: string;
+  assetWrites: Map<string, { bytes: Uint8Array; mimeType: string }>;
+}) {
+  await writeExportFile(exportPackage.inputPath, Array.from(new TextEncoder().encode(exportPackage.typstSource)));
+
+  for (const [fileName, asset] of exportPackage.assetWrites.entries()) {
+    await writeExportFile(`${exportPackage.assetsDir}/${fileName}`, Array.from(asset.bytes));
+  }
 }
 
 function resetManualCommitMessage() {
@@ -481,7 +635,7 @@ function showSelectedNoteInfo() {
 }
 
 async function handleExportSelectedNoteTypst() {
-  if (!selectedNoteId.value) {
+  if (!selectedNote.value || !selectedNoteId.value) {
     error.value = "Select a note first.";
     return;
   }
@@ -501,13 +655,54 @@ async function handleExportSelectedNoteTypst() {
   error.value = "";
 
   try {
-    const result = await exportNoteTypst(selectedNoteId.value, outputPath || undefined);
-    const attachmentLabel = result.attachmentCount === 1 ? "1 attachment" : `${result.attachmentCount} attachments`;
-    notice.value = `Exported Typst to '${result.exportFile}' (${attachmentLabel}).`;
+    const basePath = outputPath || `${selectedNote.value.document.title || "note"}.typ`;
+    const exportPackage = await buildTypstExportPackage(selectedNote.value, basePath);
+    await writeTypstExportPackage(exportPackage);
+    const attachmentLabel = exportPackage.assetWrites.size === 1
+      ? "1 attachment"
+      : `${exportPackage.assetWrites.size} attachments`;
+    notice.value = `Exported Typst to '${exportPackage.inputPath}' (${attachmentLabel}).`;
   } catch (reason) {
     error.value = toErrorMessage(reason);
   } finally {
     exportingTypst.value = false;
+  }
+}
+
+async function handleExportSelectedNotePdf() {
+  if (!selectedNote.value || !selectedNoteId.value) {
+    error.value = "Select a note first.";
+    return;
+  }
+
+  const savePath = await save({
+    title: "Export note as PDF",
+    defaultPath: `${selectedNote.value.document.title || "note"}.pdf`,
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+  });
+
+  if (!savePath) {
+    return;
+  }
+
+  const outputPath = Array.isArray(savePath) ? savePath[0] : savePath;
+  if (!outputPath) {
+    return;
+  }
+
+  exportingPdf.value = true;
+  error.value = "";
+
+  try {
+    const note = selectedNote.value;
+    const exportPackage = await buildTypstExportPackage(note, outputPath);
+    await writeTypstExportPackage(exportPackage);
+    await compileTypstToPdf(exportPackage.inputPath, outputPath);
+    notice.value = `Exported PDF to '${outputPath}'.`;
+  } catch (reason) {
+    error.value = toErrorMessage(reason);
+  } finally {
+    exportingPdf.value = false;
   }
 }
 
@@ -1046,6 +1241,8 @@ watch(notice, (message) => {
     return;
   }
 
+  console.info("[FoxNote Notice]", message);
+
   noticeTimer = setTimeout(() => {
     if (notice.value === message) {
       notice.value = "";
@@ -1058,6 +1255,8 @@ watch(error, (message) => {
   if (!message) {
     return;
   }
+
+  console.error("[FoxNote Error]", message);
 
   errorTimer = setTimeout(() => {
     if (error.value === message) {
@@ -1284,12 +1483,27 @@ function startSidebarResize(event: MouseEvent) {
                     :disabled="!selectedNote" @click="showSelectedNoteInfo" />
                 </template>
               </v-tooltip>
-              <v-tooltip text="Export" location="bottom">
-                <template #activator="{ props }">
-                  <v-btn v-bind="props" size="small" color="primary" variant="flat" icon="mdi-export"
-                    :disabled="!selectedNoteId" :loading="exportingTypst" @click="handleExportSelectedNoteTypst" />
+              <v-menu location="bottom end">
+                <template #activator="{ props: menuProps }">
+                  <v-tooltip text="Export" location="bottom">
+                    <template #activator="{ props: tooltipProps }">
+                      <v-btn
+                        v-bind="{ ...menuProps, ...tooltipProps }"
+                        size="small"
+                        color="primary"
+                        variant="flat"
+                        icon="mdi-export"
+                        :disabled="!selectedNoteId || exportingTypst || exportingPdf"
+                        :loading="exportingTypst || exportingPdf"
+                      />
+                    </template>
+                  </v-tooltip>
                 </template>
-              </v-tooltip>
+                <v-list density="compact">
+                  <v-list-item prepend-icon="mdi-code-braces" title="Export Typst" @click="handleExportSelectedNoteTypst" />
+                  <v-list-item prepend-icon="mdi-file-pdf-box" title="Export PDF" @click="handleExportSelectedNotePdf" />
+                </v-list>
+              </v-menu>
             </div>
           </header>
 

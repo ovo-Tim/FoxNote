@@ -1,4 +1,10 @@
-import type { BlockPlugin, EditorPlugin } from "./types";
+import type {
+  BlockExportFormat,
+  BlockExportResult,
+  BlockPlugin,
+  BlockTypstExportResult,
+  EditorPlugin,
+} from "./types";
 
 type PluginModule = {
   default?: EditorPlugin;
@@ -73,4 +79,48 @@ export function createDefaultBlockForType(type: string) {
   const plugin = getBlockPlugin(type);
   const block = plugin?.createDefaultBlock();
   return block ? { ...block } : null;
+}
+
+export async function exportBlockWithPlugin(
+  context: {
+    type: string;
+    block: Parameters<NonNullable<BlockPlugin["exportBlock"]>>[0]["block"];
+    note: Parameters<NonNullable<BlockPlugin["exportBlock"]>>[0]["note"];
+    index: number;
+  },
+  format: BlockExportFormat,
+): Promise<BlockExportResult> {
+  const plugin = getBlockPlugin(context.type);
+  if (!plugin?.exportBlock) {
+    throw new Error(`Block type '${context.type}' does not support export.`);
+  }
+
+  return plugin.exportBlock(
+    {
+      block: context.block,
+      note: context.note,
+      index: context.index,
+    },
+    format,
+  );
+}
+
+export async function exportTypstWithPlugin(
+  context: {
+    type: string;
+    block: Parameters<NonNullable<BlockPlugin["exportTypst"]>>[0]["block"];
+    note: Parameters<NonNullable<BlockPlugin["exportTypst"]>>[0]["note"];
+    index: number;
+  },
+): Promise<BlockTypstExportResult> {
+  const plugin = getBlockPlugin(context.type);
+  if (!plugin?.exportTypst) {
+    throw new Error(`Block type '${context.type}' does not support Typst export.`);
+  }
+
+  return plugin.exportTypst({
+    block: context.block,
+    note: context.note,
+    index: context.index,
+  });
 }

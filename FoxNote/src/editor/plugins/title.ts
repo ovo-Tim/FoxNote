@@ -1,6 +1,16 @@
 import TitleBlockCard from "../../components/blocks/TitleBlockCard.vue";
+import { exportTextAsGraphic } from "../../lib/blockExport";
 import type { NoteBlock } from "../../types/note";
 import type { BlockPlugin, EditorPlugin } from "./types";
+
+function escapeTypstText(input: string): string {
+  return input.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+function typstHeadingLine(level: number, text: string): string {
+  const normalizedLevel = Math.min(6, Math.max(1, level));
+  return `${"=".repeat(normalizedLevel)} ${escapeTypstText(text || "Untitled section")}`;
+}
 
 const titleBlockPlugin: BlockPlugin = {
   type: "title",
@@ -38,6 +48,35 @@ const titleBlockPlugin: BlockPlugin = {
       updateFolded: (value: boolean) => context.updateFolded(Boolean(value)),
       updateSummary: (value: string) => context.updateSummary(String(value ?? "")),
     }),
+  },
+  exportBlock: async (context, format) => {
+    const level = Math.min(6, Math.max(1, Number(context.block.level) || 1));
+    const text = typeof context.block.content === "string" ? context.block.content.trim() : "";
+    const width = Math.max(320, Math.min(2200, Math.round(Number(context.block.width) || 960)));
+    const fontSize = Math.max(16, 42 - level * 4);
+    const height = Math.max(70, Math.round(fontSize * 2.2));
+    const result = await exportTextAsGraphic(text || "Untitled section", format, {
+      width,
+      height,
+      fontSize,
+      fontWeight: 700 - level * 40,
+      color: "#121826",
+      background: "transparent",
+    });
+    return {
+      format,
+      mimeType: result.mimeType,
+      bytes: result.bytes,
+      width: result.width,
+      height: result.height,
+    };
+  },
+  exportTypst: async (context) => {
+    const level = Math.min(6, Math.max(1, Number(context.block.level) || 1));
+    const text = typeof context.block.content === "string" ? context.block.content.trim() : "";
+    return {
+      typst: typstHeadingLine(level, text),
+    };
   },
 };
 

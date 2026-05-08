@@ -68,6 +68,14 @@ export async function exportNoteTypst(
   return invoke<ExportTypstResult>("export_note_typst", { id, outputDir });
 }
 
+export async function writeExportFile(path: string, bytes: number[]): Promise<void> {
+  return invoke<void>("write_export_file", { path, bytes });
+}
+
+export async function compileTypstToPdf(inputPath: string, outputPath: string): Promise<void> {
+  return invoke<void>("compile_typst_to_pdf", { inputPath, outputPath });
+}
+
 export async function saveNoteImageAttachment(
   id: string,
   mimeType: string,

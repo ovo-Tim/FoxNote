@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { renderTypstToSvgWithTheme } from "../../lib/typstPreview";
+import { renderTypstToPortableSvgWithTheme } from "../../lib/typstPreview";
 
 const props = defineProps<{
   modelValue: string;
@@ -20,6 +20,10 @@ const prefersDark = ref(false);
 let renderTicket = 0;
 
 let mediaQuery: MediaQueryList | null = null;
+
+function stripSvgScripts(svg: string): string {
+  return svg.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+}
 
 function syncDarkMode() {
   if (!mediaQuery) {
@@ -62,13 +66,20 @@ async function renderPreview(source: string) {
 
   rendering.value = true;
   try {
-    const svg = await renderTypstToSvgWithTheme(source, {
+    const svg = await renderTypstToPortableSvgWithTheme(source, {
       darkMode: prefersDark.value,
     });
     if (ticket !== renderTicket) {
       return;
     }
-    previewSvg.value = svg;
+
+    if (/<script\b/i.test(svg)) {
+      console.warn("[TypstBlock] script tag found in preview SVG; stripping for safety", {
+        length: svg.length,
+      });
+    }
+
+    previewSvg.value = stripSvgScripts(svg);
     previewError.value = "";
   } catch (reason) {
     if (ticket !== renderTicket) {

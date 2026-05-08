@@ -1,4 +1,5 @@
 import TypstBlockCard from "../../components/blocks/TypstBlockCard.vue";
+import { exportTypst } from "../../lib/blockExport";
 import type { NoteBlock } from "../../types/note";
 import type { BlockPlugin, EditorPlugin } from "./types";
 
@@ -30,6 +31,23 @@ const typstBlockPlugin: BlockPlugin = {
       blur: context.clearEditing,
       updateModelValue: (value: string) => context.updateContent(String(value ?? "")),
     }),
+  },
+  exportBlock: async (context, format) => {
+    const source = typeof context.block.content === "string" ? context.block.content : "";
+    const result = await exportTypst(source, format);
+    return {
+      format,
+      mimeType: result.mimeType,
+      bytes: result.bytes,
+      width: result.width,
+      height: result.height,
+    };
+  },
+  exportTypst: async (context) => {
+    const source = typeof context.block.content === "string" ? context.block.content.trim() : "";
+    return {
+      typst: source || "",
+    };
   },
 };
 

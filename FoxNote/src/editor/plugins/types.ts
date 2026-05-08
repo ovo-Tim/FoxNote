@@ -18,6 +18,33 @@ export interface BlockRenderContext {
   updateSummary: (nextSummary: string) => void;
 }
 
+export type BlockExportFormat = "svg" | "png";
+
+export interface BlockExportResult {
+  format: BlockExportFormat;
+  mimeType: string;
+  bytes: Uint8Array;
+  width: number;
+  height: number;
+}
+
+export interface BlockExportContext {
+  block: NoteBlock;
+  note: NoteRecord | null;
+  index: number;
+}
+
+export interface BlockTypstAsset {
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
+
+export interface BlockTypstExportResult {
+  typst: string;
+  assets?: BlockTypstAsset[];
+}
+
 export interface BlockRendererDefinition {
   component: Component;
   props?: (context: BlockRenderContext) => Record<string, unknown>;
@@ -31,6 +58,11 @@ export interface BlockPlugin {
   createDefaultBlock: () => NoteBlock;
   renderer?: BlockRendererDefinition;
   previewText?: (block: NoteBlock) => string;
+  exportBlock?: (
+    context: BlockExportContext,
+    format: BlockExportFormat,
+  ) => Promise<BlockExportResult>;
+  exportTypst?: (context: BlockExportContext) => Promise<BlockTypstExportResult>;
 }
 
 export interface EditorPlugin {
