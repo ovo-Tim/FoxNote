@@ -1,9 +1,13 @@
 import { $typst } from "@myriaddreamin/typst.ts";
 import compilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm?url";
 import rendererWasmUrl from "@myriaddreamin/typst-ts-renderer/pkg/typst_ts_renderer_bg.wasm?url";
-import { preloadFontAssets } from "@myriaddreamin/typst.ts/dist/esm/options.init.mjs";
+import { TypstSnippet } from "@myriaddreamin/typst.ts/dist/esm/contrib/snippet.mjs";
+import { loadFonts } from "@myriaddreamin/typst.ts/dist/esm/options.init.mjs";
+import sourceHanSerifRegularUrl from "@fontpkg/source-han-serif-sc/SourceHanSerifSC-Regular.otf?url";
+import sourceHanSerifBoldUrl from "@fontpkg/source-han-serif-sc/SourceHanSerifSC-Bold.otf?url";
 
 let initialized = false;
+let initPromise: Promise<void> | null = null;
 
 function isAlreadyInitializedError(error: unknown): boolean {
   const message =
@@ -27,41 +31,65 @@ function buildThemedSource(source: string, options: TypstRenderOptions = {}): st
   const textColor = darkMode ? "#edf2ff" : "#111111";
 
   return [
+    '#import "@preview/note-me:0.6.0": *',
     `#set page(width: ${pageWidth}, height: ${pageHeight}, margin: 0.5pt)`,
-    `#set text(size: 20pt, fill: rgb("${textColor}"), font: ("Noto Serif CJK SC", "Libertinus Serif", "New Computer Modern", "DejaVu Sans Mono"))`,
+    `#set text(size: 20pt, fill: rgb("${textColor}"), font: ("Source Han Serif SC", "Noto Serif CJK SC", "Libertinus Serif", "New Computer Modern", "DejaVu Sans Mono"))`,
+    `#set text(top-edge: "bounds", bottom-edge: "bounds")`,
     `#show math.equation: set text(top-edge: "bounds", bottom-edge: "bounds")`,
     "",
     source,
   ].join("\n");
 }
 
-function ensureInitialized() {
+async function ensureInitialized() {
   if (initialized) {
     return;
   }
 
-  try {
-    $typst.setCompilerInitOptions({
-      getModule: () => compilerWasmUrl,
-      beforeBuild: [preloadFontAssets({ assets: ["text", "cjk"] })],
-    } as any);
-  } catch (error) {
-    if (!isAlreadyInitializedError(error)) {
-      throw error;
-    }
+  if (initPromise) {
+    await initPromise;
+    return;
   }
 
-  try {
-    $typst.setRendererInitOptions({
-      getModule: () => rendererWasmUrl,
-    });
-  } catch (error) {
-    if (!isAlreadyInitializedError(error)) {
-      throw error;
+  initPromise = (async () => {
+    try {
+      $typst.setCompilerInitOptions({
+        getModule: () => compilerWasmUrl,
+        beforeBuild: [loadFonts([sourceHanSerifRegularUrl, sourceHanSerifBoldUrl], { assets: ["text"] })],
+      } as any);
+    } catch (error) {
+      if (!isAlreadyInitializedError(error)) {
+        throw error;
+      }
     }
-  }
 
-  initialized = true;
+    try {
+      $typst.setRendererInitOptions({
+        getModule: () => rendererWasmUrl,
+      });
+    } catch (error) {
+      if (!isAlreadyInitializedError(error)) {
+        throw error;
+      }
+    }
+
+    try {
+      $typst.use(await TypstSnippet.fetchPackageRegistry());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "");
+      if (!/already prepare uses|already.*use|initialized/i.test(message)) {
+        throw error;
+      }
+    }
+
+    initialized = true;
+  })();
+
+  try {
+    await initPromise;
+  } finally {
+    initPromise = null;
+  }
 }
 
 function renderSvg(mainContent: string, portable: boolean): Promise<string> {
@@ -76,7 +104,7 @@ function renderSvg(mainContent: string, portable: boolean): Promise<string> {
 }
 
 export async function renderTypstToSvg(source: string): Promise<string> {
-  ensureInitialized();
+  await ensureInitialized();
 
   return renderSvg(source, false);
 }
@@ -85,7 +113,7 @@ export async function renderTypstToSvgWithTheme(
   source: string,
   options: TypstRenderOptions = {},
 ): Promise<string> {
-  ensureInitialized();
+  await ensureInitialized();
 
   const themedSource = buildThemedSource(source, options);
 
@@ -96,7 +124,7 @@ export async function renderTypstToPortableSvgWithTheme(
   source: string,
   options: TypstRenderOptions = {},
 ): Promise<string> {
-  ensureInitialized();
+  await ensureInitialized();
 
   const themedSource = buildThemedSource(source, options);
 
@@ -107,7 +135,7 @@ export async function renderTypstToPngWithTheme(
   source: string,
   options: TypstRenderOptions = {},
 ): Promise<{ bytes: Uint8Array; width: number; height: number }> {
-  ensureInitialized();
+  await ensureInitialized();
 
   const themedSource = buildThemedSource(source, options);
   const mount = document.createElement("div");

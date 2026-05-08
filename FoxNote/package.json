@@ -15,6 +15,7 @@
     "check": "pnpm lint && pnpm test && pnpm test:rust"
   },
   "dependencies": {
+    "@fontpkg/source-han-serif-sc": "^2.3.3",
     "@mdi/font": "^7.4.47",
     "@myriaddreamin/typst-ts-renderer": "0.7.0-rc2",
     "@myriaddreamin/typst-ts-web-compiler": "0.7.0-rc2",

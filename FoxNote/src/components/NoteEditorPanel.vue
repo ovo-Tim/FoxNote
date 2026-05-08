@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { saveNoteImageAttachment } from "../lib/noteApi";
+import { loadNoteAttachment, saveNoteAttachment, saveNoteImageAttachment } from "../lib/noteApi";
 import UnsupportedBlockCard from "./blocks/UnsupportedBlockCard.vue";
 import { createDefaultBlockForType, getBlockPlugin, listBlockPlugins } from "../editor/plugins/registry";
-import { cloneBlocks } from "../editor/utils";
+import { blockPreviewText, cloneBlocks } from "../editor/utils";
 import type { NoteBlock, NoteDocument, NoteRecord } from "../types/note";
 import type { BlockRenderContext } from "../editor/plugins/types";
 
@@ -34,9 +34,12 @@ const editingBlockIndex = ref<number | null>(null);
 const isHydratingForm = ref(false);
 const titleEditing = ref(false);
 const titleInputRef = ref<HTMLInputElement | null>(null);
+const titleDisplayRef = ref<HTMLElement | null>(null);
+const tagAreaTriggerRef = ref<HTMLElement | null>(null);
 const editorPaneRef = ref<HTMLElement | null>(null);
 const blockStackRef = ref<HTMLElement | null>(null);
 const blockElements = ref<(HTMLElement | null)[]>([]);
+const findInputRef = ref<HTMLInputElement | null>(null);
 const reorderState = reactive({
   active: false,
   sourceIndex: -1,
@@ -57,6 +60,14 @@ const marquee = reactive({
   currentX: 0,
   currentY: 0,
 });
+const findBarOpen = ref(false);
+const findQuery = ref("");
+const currentFindMatchIndex = ref(0);
+
+type NoteFindMatch =
+  | { kind: "title" }
+  | { kind: "tags" }
+  | { kind: "block"; index: number };
 
 const tagToneClasses = ["tone-amber", "tone-orange", "tone-gray", "tone-cyan", "tone-magenta"];
 const blockPlugins = listBlockPlugins();
@@ -214,6 +225,59 @@ const marqueeStyle = computed<Record<string, string>>(() => {
     width: `${Math.max(0, right - left)}px`,
     height: `${Math.max(0, bottom - top)}px`,
   };
+});
+
+const findMatches = computed<NoteFindMatch[]>(() => {
+  const query = findQuery.value.trim().toLowerCase();
+  if (!query) {
+    return [];
+  }
+
+  const matches: NoteFindMatch[] = [];
+  if ((form.title || "").toLowerCase().includes(query)) {
+    matches.push({ kind: "title" });
+  }
+
+  if (form.tags.some((tag) => tag.toLowerCase().includes(query))) {
+    matches.push({ kind: "tags" });
+  }
+
+  for (let index = 0; index < form.content.length; index += 1) {
+    if (isBlockHidden(index)) {
+      continue;
+    }
+
+    const block = form.content[index];
+    if (!block) {
+      continue;
+    }
+
+    const searchable = blockPreviewText(block).trim().toLowerCase();
+    if (searchable && searchable.includes(query)) {
+      matches.push({ kind: "block", index });
+    }
+  }
+
+  return matches;
+});
+
+const currentFindMatch = computed<NoteFindMatch | null>(() => {
+  if (findMatches.value.length === 0) {
+    return null;
+  }
+  const index = Math.max(0, Math.min(currentFindMatchIndex.value, findMatches.value.length - 1));
+  return findMatches.value[index] ?? null;
+});
+
+const findStatusLabel = computed(() => {
+  const total = findMatches.value.length;
+  if (!findQuery.value.trim()) {
+    return "Type to search this note";
+  }
+  if (total === 0) {
+    return "No matches";
+  }
+  return `${Math.min(currentFindMatchIndex.value + 1, total)} / ${total}`;
 });
 
 function normalizeTagInput(values: unknown) {
@@ -718,6 +782,83 @@ function finishTitleEdit() {
   }
 }
 
+function focusFindInput(select = false) {
+  void nextTick(() => {
+    findInputRef.value?.focus();
+    if (select) {
+      findInputRef.value?.select();
+    }
+  });
+}
+
+function openFindBar(select = false) {
+  findBarOpen.value = true;
+  focusFindInput(select);
+}
+
+function closeFindBar() {
+  findBarOpen.value = false;
+  findQuery.value = "";
+  currentFindMatchIndex.value = 0;
+}
+
+function scrollCurrentFindMatchIntoView() {
+  const match = currentFindMatch.value;
+  if (!match) {
+    return;
+  }
+
+  if (match.kind === "title") {
+    (titleEditing.value ? titleInputRef.value : titleDisplayRef.value)?.scrollIntoView({
+      block: "center",
+      behavior: "smooth",
+    });
+    return;
+  }
+
+  if (match.kind === "tags") {
+    tagAreaTriggerRef.value?.scrollIntoView({ block: "center", behavior: "smooth" });
+    return;
+  }
+
+  const element = blockElements.value[match.index];
+  element?.scrollIntoView({ block: "center", behavior: "smooth" });
+  selectOnly(match.index);
+}
+
+function stepFindMatch(direction: 1 | -1) {
+  const total = findMatches.value.length;
+  if (total === 0) {
+    return;
+  }
+  currentFindMatchIndex.value = (currentFindMatchIndex.value + direction + total) % total;
+  scrollCurrentFindMatchIntoView();
+}
+
+function isFindMatchTitle(): boolean {
+  return findMatches.value.some((match) => match.kind === "title");
+}
+
+function isCurrentFindTitle(): boolean {
+  return currentFindMatch.value?.kind === "title";
+}
+
+function isFindMatchTags(): boolean {
+  return findMatches.value.some((match) => match.kind === "tags");
+}
+
+function isCurrentFindTags(): boolean {
+  return currentFindMatch.value?.kind === "tags";
+}
+
+function isFindMatchBlock(index: number): boolean {
+  return findMatches.value.some((match) => match.kind === "block" && match.index === index);
+}
+
+function isCurrentFindBlock(index: number): boolean {
+  return currentFindMatch.value?.kind === "block" && currentFindMatch.value.index === index;
+}
+
 function exitBlockEditMode() {
   if (editingBlockIndex.value !== null) {
     finishBlockEditing(editingBlockIndex.value);
@@ -903,6 +1044,19 @@ function onKeydown(event: KeyboardEvent) {
 
   const targetEl = resolveTargetElement(event.target);
   const withinEditor = Boolean(targetEl && editorPaneRef.value?.contains(targetEl));
+  const key = event.key.toLowerCase();
+
+  if ((event.metaKey || event.ctrlKey) && key === "f") {
+    event.preventDefault();
+    openFindBar(true);
+    return;
+  }
+
+  if (key === "escape" && findBarOpen.value) {
+    event.preventDefault();
+    closeFindBar();
+    return;
+  }
 
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && withinEditor) {
     event.preventDefault();
@@ -944,9 +1098,210 @@ function onKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+    event.preventDefault();
+    copySelectedBlocks();
+    return;
+  }
+
   if (event.key === "Escape") {
     clearSelection();
   }
+}
+
+const FOXNOTE_BLOCKS_MIME = "application/x-foxnote-blocks";
+const FOXNOTE_BLOCKS_TEXT_PREFIX = "FOXNOTE_BLOCKS::";
+const DEBUG_BLOCK_CLIPBOARD = true;
+
+function logBlockClipboard(message: string, details?: Record<string, unknown>) {
+  if (!DEBUG_BLOCK_CLIPBOARD) {
+    return;
+  }
+  console.debug(`[BlockClipboard] ${message}`, details ?? {});
+}
+
+function collectSelectedBlocksForClipboard(): NoteBlock[] {
+  const sourceIndices = [...selectedBlocks.value].sort((a, b) => a - b);
+  return sourceIndices
+    .map((index) => form.content[index])
+    .filter((block): block is NoteBlock => Boolean(block))
+    .map((block) => ({ ...block }));
+}
+
+function buildClipboardPayload(blocks: NoteBlock[]): { json: string; plainText: string } {
+  const json = JSON.stringify({
+    sourceNoteId: props.note?.id ?? null,
+    blocks,
+  });
+  const plainText = `${FOXNOTE_BLOCKS_TEXT_PREFIX}${json}`;
+  return { json, plainText };
+}
+
+function copySelectedBlocks() {
+  if (selectedBlocks.value.length === 0) {
+    logBlockClipboard("copy aborted: no selected blocks");
+    return;
+  }
+
+  const copied = collectSelectedBlocksForClipboard();
+
+  if (copied.length === 0) {
+    logBlockClipboard("copy aborted: selected blocks resolved empty", {
+      selectedCount: selectedBlocks.value.length,
+    });
+    return;
+  }
+
+  const payload = buildClipboardPayload(copied);
+  logBlockClipboard("copy requested via keybinding", {
+    copiedCount: copied.length,
+    selectedIndices: [...selectedBlocks.value],
+    jsonLength: payload.json.length,
+    hasNavigatorClipboard: typeof navigator !== "undefined" && Boolean(navigator.clipboard),
+  });
+
+  if (typeof navigator === "undefined" || !navigator.clipboard || typeof ClipboardItem === "undefined") {
+    logBlockClipboard("copy keybinding fallback unavailable: clipboard APIs missing");
+    return;
+  }
+
+  const blocksBlob = new Blob([payload.json], { type: FOXNOTE_BLOCKS_MIME });
+  const textBlob = new Blob([payload.plainText], { type: "text/plain" });
+
+  void navigator.clipboard.write([
+    new ClipboardItem({ [FOXNOTE_BLOCKS_MIME]: blocksBlob, "text/plain": textBlob }),
+  ]).then(() => {
+    logBlockClipboard("copy keybinding write success", { copiedCount: copied.length });
+  }).catch((reason) => {
+    console.error("[BlockClipboard] copy keybinding write failed", reason);
+  });
+}
+
+function onWindowCopy(event: ClipboardEvent) {
+  if (!props.note) {
+    return;
+  }
+
+  if (selectedBlocks.value.length === 0) {
+    return;
+  }
+
+  if (isTextEntryTarget(event.target)) {
+    logBlockClipboard("native copy ignored: text entry target", {
+      targetType: resolveTargetElement(event.target)?.tagName,
+    });
+    return;
+  }
+
+  const copied = collectSelectedBlocksForClipboard();
+  if (copied.length === 0) {
+    logBlockClipboard("native copy aborted: selected blocks resolved empty");
+    return;
+  }
+
+  const payload = buildClipboardPayload(copied);
+  event.preventDefault();
+  event.clipboardData?.setData(FOXNOTE_BLOCKS_MIME, payload.json);
+  event.clipboardData?.setData("text/plain", payload.plainText);
+  logBlockClipboard("native copy set clipboard data", {
+    copiedCount: copied.length,
+    selectedIndices: [...selectedBlocks.value],
+    jsonLength: payload.json.length,
+  });
+}
+
+function tryParseFoxnoteBlocks(raw: string): { sourceNoteId: string | null; blocks: NoteBlock[] } | null {
+  if (!raw) {
+    return null;
+  }
+
+  const payload = raw.startsWith(FOXNOTE_BLOCKS_TEXT_PREFIX)
+    ? raw.slice(FOXNOTE_BLOCKS_TEXT_PREFIX.length)
+    : raw;
+
+  const parsed = JSON.parse(payload);
+
+  if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type) {
+    return {
+      sourceNoteId: null,
+      blocks: parsed.map((block: NoteBlock) => ({ ...block })),
+    };
+  }
+
+  const parsedBlocks = parsed?.blocks;
+  if (!Array.isArray(parsedBlocks) || parsedBlocks.length === 0 || !parsedBlocks[0]?.type) {
+    return null;
+  }
+
+  return {
+    sourceNoteId: typeof parsed?.sourceNoteId === "string" ? parsed.sourceNoteId : null,
+    blocks: parsedBlocks.map((block: NoteBlock) => ({ ...block })),
+  };
+}
+
+function extensionFromPath(path: string): string | undefined {
+  const slashIndex = path.lastIndexOf("/");
+  const fileName = slashIndex >= 0 ? path.slice(slashIndex + 1) : path;
+  const dotIndex = fileName.lastIndexOf(".");
+  if (dotIndex < 0 || dotIndex === fileName.length - 1) {
+    return undefined;
+  }
+  return fileName.slice(dotIndex + 1).toLowerCase();
+}
+
+async function cloneBlockAttachmentsForTarget(
+  sourceNoteId: string | null,
+  targetNoteId: string,
+  blocks: NoteBlock[],
+): Promise<NoteBlock[]> {
+  if (!sourceNoteId || sourceNoteId === targetNoteId) {
+    return blocks.map((block) => ({ ...block }));
+  }
+
+  logBlockClipboard("cross-note paste detected, cloning attachments", {
+    sourceNoteId,
+    targetNoteId,
+    blockCount: blocks.length,
+  });
+
+  const result: NoteBlock[] = [];
+  for (const block of blocks) {
+    if (!block.path) {
+      result.push({ ...block });
+      continue;
+    }
+
+    try {
+      const payload = await loadNoteAttachment(sourceNoteId, block.path);
+      const bytes = payload.bytes ?? [];
+      const mimeType = payload.mimeType || "application/octet-stream";
+      const extension = extensionFromPath(block.path);
+      const nextPath = await saveNoteAttachment(
+        targetNoteId,
+        mimeType,
+        bytes,
+        block.type || "attachment",
+        extension,
+      );
+      result.push({ ...block, path: nextPath });
+      logBlockClipboard("attachment cloned", {
+        blockType: block.type,
+        oldPath: block.path,
+        newPath: nextPath,
+        mimeType,
+      });
+    } catch (reason) {
+      console.error("[BlockClipboard] failed to clone block attachment", {
+        sourceNoteId,
+        targetNoteId,
+        path: block.path,
+        reason,
+      });
+      result.push({ ...block });
+    }
+  }
+
+  return result;
 }
 
 function insertTypstBlockFromPaste(text: string) {
@@ -1033,7 +1388,93 @@ async function onWindowPaste(event: ClipboardEvent) {
   }
 
   if (isTextEntryTarget(event.target)) {
+    logBlockClipboard("paste ignored: text entry target", {
+      targetType: resolveTargetElement(event.target)?.tagName,
+    });
     return;
+  }
+
+  logBlockClipboard("paste event received", {
+    clipboardTypes: [...(event.clipboardData?.types ?? [])],
+    itemTypes: [...(event.clipboardData?.items ?? [])].map((item) => item.type),
+    selectedCount: selectedBlocks.value.length,
+  });
+
+  const foxnoteItem = [...(event.clipboardData?.items ?? [])].find(
+    (item) => item.type === FOXNOTE_BLOCKS_MIME,
+  );
+  if (foxnoteItem) {
+    event.preventDefault();
+    try {
+      const blob = foxnoteItem.getAsFile();
+      if (blob) {
+        const text = await blob.text();
+        const parsed = tryParseFoxnoteBlocks(text);
+        if (parsed) {
+          const blocks = cloneBlocks(form.content);
+          const baseIndex = selectedBlocks.value[selectedBlocks.value.length - 1] ?? form.content.length - 1;
+          const insertIndex = Math.max(0, Math.min(blocks.length, baseIndex + 1));
+          const pastedBlocks = await cloneBlockAttachmentsForTarget(
+            parsed.sourceNoteId,
+            props.note.id,
+            parsed.blocks,
+          );
+          blocks.splice(insertIndex, 0, ...pastedBlocks);
+          form.content = blocks;
+          const inserted = pastedBlocks.map((_: NoteBlock, i: number) => insertIndex + i);
+          normalizeSelection(inserted);
+          selectionAnchor.value = inserted[inserted.length - 1] ?? null;
+          setEditingBlock(inserted[0] ?? null);
+          closeSlashMenu();
+          closeActionMenu();
+          logBlockClipboard("paste foxnote MIME success", {
+            pastedCount: pastedBlocks.length,
+            insertIndex,
+            sourceNoteId: parsed.sourceNoteId,
+            targetNoteId: props.note.id,
+          });
+          return;
+        }
+      }
+    } catch (reason) {
+      console.error("failed to paste foxnote blocks", reason);
+    }
+    logBlockClipboard("paste foxnote MIME failed, falling back to text/image");
+  }
+
+  const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+  if (pastedText.startsWith(FOXNOTE_BLOCKS_TEXT_PREFIX)) {
+    event.preventDefault();
+    try {
+      const parsed = tryParseFoxnoteBlocks(pastedText);
+      if (parsed) {
+        const blocks = cloneBlocks(form.content);
+        const baseIndex = selectedBlocks.value[selectedBlocks.value.length - 1] ?? form.content.length - 1;
+        const insertIndex = Math.max(0, Math.min(blocks.length, baseIndex + 1));
+        const pastedBlocks = await cloneBlockAttachmentsForTarget(
+          parsed.sourceNoteId,
+          props.note.id,
+          parsed.blocks,
+        );
+        blocks.splice(insertIndex, 0, ...pastedBlocks);
+        form.content = blocks;
+        const inserted = pastedBlocks.map((_: NoteBlock, i: number) => insertIndex + i);
+        normalizeSelection(inserted);
+        selectionAnchor.value = inserted[inserted.length - 1] ?? null;
+        setEditingBlock(inserted[0] ?? null);
+        closeSlashMenu();
+        closeActionMenu();
+        logBlockClipboard("paste text-prefix success", {
+          pastedCount: pastedBlocks.length,
+          insertIndex,
+          sourceNoteId: parsed.sourceNoteId,
+          targetNoteId: props.note.id,
+        });
+      }
+      return;
+    } catch (reason) {
+      console.error("failed to paste foxnote blocks from text prefix", reason);
+    }
   }
 
   const imageItem = [...(event.clipboardData?.items ?? [])].find((item) => item.type.startsWith("image/"));
@@ -1048,12 +1489,15 @@ async function onWindowPaste(event: ClipboardEvent) {
     return;
   }
 
-  const pastedText = event.clipboardData?.getData("text/plain") ?? "";
   if (!pastedText.trim()) {
+    logBlockClipboard("paste ignored: empty plain text and no image/foxnote blocks");
     return;
   }
 
   event.preventDefault();
+  logBlockClipboard("paste plain text fallback to typst block", {
+    textLength: pastedText.length,
+  });
   insertTypstBlockFromPaste(pastedText);
 }
 
@@ -1187,6 +1631,7 @@ watch(
       closeSlashMenu();
       closeActionMenu();
       titleEditing.value = false;
+      closeFindBar();
       isHydratingForm.value = false;
       return;
     }
@@ -1202,9 +1647,32 @@ watch(
     closeActionMenu();
     titleEditing.value = false;
     clearSelection();
+    closeFindBar();
     isHydratingForm.value = false;
   },
   { immediate: true },
+);
+
+watch(findQuery, () => {
+  currentFindMatchIndex.value = 0;
+  if (findQuery.value.trim()) {
+    void nextTick(() => {
+      scrollCurrentFindMatchIntoView();
+    });
+  }
+});
+
+watch(
+  () => findMatches.value.length,
+  (length) => {
+    if (length <= 0) {
+      currentFindMatchIndex.value = 0;
+      return;
+    }
+    if (currentFindMatchIndex.value >= length) {
+      currentFindMatchIndex.value = 0;
+    }
+  },
 );
 
 watch(
@@ -1229,6 +1697,7 @@ watch(hiddenBlockSet, (hidden) => {
 
 onMounted(() => {
   window.addEventListener("keydown", onKeydown);
+  window.addEventListener("copy", onWindowCopy);
   window.addEventListener("paste", onWindowPaste);
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", stopMarquee);
@@ -1238,6 +1707,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("pointermove", onMenuHandlePointerMove);
   window.removeEventListener("pointerup", onMenuHandlePointerUp);
   window.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("copy", onWindowCopy);
   window.removeEventListener("paste", onWindowPaste);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", stopMarquee);
@@ -1263,22 +1733,45 @@ watch(form, emitChange, { deep: true });
 </script>
 
 <template>
+  <div v-if="findBarOpen" class="note-find-bar" @click.stop>
+    <input ref="findInputRef" v-model="findQuery" type="text" class="note-find-input" placeholder="Find in note"
+      @keydown.enter.prevent="stepFindMatch($event.shiftKey ? -1 : 1)" @keydown.esc.prevent="closeFindBar" />
+    <span class="note-find-status">{{ findStatusLabel }}</span>
+    <div class="note-find-actions">
+      <button type="button" class="note-find-icon-btn" :disabled="findMatches.length === 0" title="Previous match"
+        @click="stepFindMatch(-1)">
+        <v-icon icon="mdi-chevron-up" size="16" />
+      </button>
+      <button type="button" class="note-find-icon-btn" :disabled="findMatches.length === 0" title="Next match"
+        @click="stepFindMatch(1)">
+        <v-icon icon="mdi-chevron-down" size="16" />
+      </button>
+    </div>
+    <button type="button" class="note-find-close-btn" title="Close find" @click="closeFindBar">
+      <v-icon icon="mdi-close" size="15" />
+    </button>
+  </div>
+
   <section ref="editorPaneRef" class="editor-pane" :class="{ 'marquee-active': marquee.pending || marquee.active }"
     v-if="note" @click.self="exitBlockEditMode" @mousedown.capture="onEditorPaneMouseDown"
     @click.capture="onEditorPaneClickCapture">
+
     <header class="note-top">
       <div class="meta-wrap">
-        <button v-if="!titleEditing" type="button" class="title-display" @click="startTitleEdit">
+        <button v-if="!titleEditing" ref="titleDisplayRef" type="button" class="title-display"
+          :class="{ 'find-hit': isFindMatchTitle(), 'find-current-hit': isCurrentFindTitle() }" @click="startTitleEdit">
           {{ form.title || "Untitled" }}
         </button>
-        <input v-else ref="titleInputRef" v-model="form.title" class="title-input" type="text" @blur="finishTitleEdit"
-          @keydown.enter.prevent="finishTitleEdit" @keydown.esc.prevent="finishTitleEdit" />
+        <input v-else ref="titleInputRef" v-model="form.title" class="title-input"
+          :class="{ 'find-hit': isFindMatchTitle(), 'find-current-hit': isCurrentFindTitle() }" type="text"
+          @blur="finishTitleEdit" @keydown.enter.prevent="finishTitleEdit" @keydown.esc.prevent="finishTitleEdit" />
         <p class="meta-line">
           <span>{{ noteTypeLabel }}</span>
           <span class="dot">•</span>
           <v-menu v-model="tagMenuOpen" location="bottom start" :close-on-content-click="false">
             <template #activator="{ props: menuProps }">
-              <button type="button" class="tag-area-trigger" v-bind="menuProps">
+              <button ref="tagAreaTriggerRef" type="button" class="tag-area-trigger"
+                :class="{ 'find-hit': isFindMatchTags(), 'find-current-hit': isCurrentFindTags() }" v-bind="menuProps">
                 <template v-if="form.tags.length > 0">
                   <span v-for="tag in form.tags" :key="`meta-${tag}`" class="meta-tag-pill" :class="tagToneClass(tag)">
                     {{ tag }}
@@ -1316,11 +1809,12 @@ watch(form, emitChange, { deep: true });
 
     <section ref="blockStackRef" class="block-stack" @click.self="exitBlockEditMode">
       <article v-for="(block, index) in form.content" :key="`${note.id}-block-${index}-${block.type}`"
-        v-show="!isBlockHidden(index)"
-        :ref="(el) => setBlockElement(index, el)" class="block-shell" :class="{
+        v-show="!isBlockHidden(index)" :ref="(el) => setBlockElement(index, el)" class="block-shell" :class="{
           selected: isBlockSelected(index),
           'is-adding-top': isDropTargetTop(index),
           'is-adding-bottom': isDropTargetBottom(index),
+          'find-hit': isFindMatchBlock(index),
+          'find-current-hit': isCurrentFindBlock(index),
         }" :style="blockShellStyle(index)" @mousedown="onBlockMouseDown(index, $event)">
 
         <component :is="resolveBlockComponent(block)" v-bind="resolveBlockProps(index, block)"
@@ -1408,6 +1902,90 @@ watch(form, emitChange, { deep: true });
   gap: 0.45rem;
 }
 
+.note-find-bar {
+  position: absolute;
+  top: 3.8rem;
+  right: 0.55rem;
+  z-index: 14;
+  width: min(330px, calc(100% - 1.1rem));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 0.28rem;
+  align-items: center;
+  padding: 0.34rem 0.38rem;
+  border: 1px solid color-mix(in srgb, var(--fox-border) 82%, transparent 18%);
+  border-radius: 12px;
+  background: color-mix(in srgb, #171c26 94%, var(--fox-surface) 6%);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+}
+
+.note-find-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fox-text-strong);
+  padding: 0.34rem 0.48rem;
+  font-size: 0.92rem;
+}
+
+.note-find-input:focus {
+  outline: 0;
+}
+
+.note-find-status {
+  color: var(--fox-text-muted);
+  font-size: 0.77rem;
+  white-space: nowrap;
+  justify-self: center;
+  min-width: 3.1rem;
+  text-align: center;
+}
+
+.note-find-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid color-mix(in srgb, var(--fox-border) 78%, transparent 22%);
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fox-surface) 92%, black 8%);
+}
+
+.note-find-icon-btn,
+.note-find-close-btn {
+  border: 0;
+  background: transparent;
+  color: var(--fox-text-body);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.note-find-icon-btn+.note-find-icon-btn {
+  border-left: 1px solid color-mix(in srgb, var(--fox-border) 78%, transparent 22%);
+}
+
+.note-find-icon-btn:hover:not(:disabled),
+.note-find-close-btn:hover {
+  background: color-mix(in srgb, var(--fox-chip) 70%, transparent 30%);
+}
+
+.note-find-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.note-find-close-btn {
+  color: var(--fox-text-muted);
+  border-radius: 8px;
+}
+
 .meta-wrap {
   flex: 1;
   min-width: 0;
@@ -1492,6 +2070,14 @@ watch(form, emitChange, { deep: true });
 .tag-area-trigger:hover .meta-tag-pill,
 .tag-area-trigger:hover .empty-tag-label {
   filter: brightness(1.08);
+}
+
+.find-hit {
+  box-shadow: 0 0 0 1px color-mix(in srgb, #f0c75e 35%, transparent 65%);
+}
+
+.find-current-hit {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fox-primary) 55%, transparent 45%);
 }
 
 .tag-menu {
@@ -1841,6 +2427,25 @@ watch(form, emitChange, { deep: true });
     transform: none;
     flex-direction: row;
     margin-bottom: 0.3rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .note-find-bar {
+    position: static;
+    width: auto;
+    margin: 0.8rem 0 0;
+    grid-template-columns: 1fr auto auto;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
+  }
+
+  .note-find-input {
+    grid-column: 1 / -1;
+  }
+
+  .note-find-status {
+    justify-self: start;
+    min-width: 0;
   }
 }
 </style>

@@ -10,8 +10,14 @@ use core::{
     sync::{SyncService, SyncStatus},
     tags::{TagEntry, TagIndexService},
 };
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path};
 use tauri::Manager;
+use typst::layout::PagedDocument;
+use typst_as_lib::typst_kit_options::TypstKitFontOptions;
+use typst_as_lib::TypstEngine;
+
+static SOURCE_HAN_SERIF_SC_REGULAR: &[u8] = include_bytes!("../fonts/SourceHanSerifSC-Regular.otf");
+static SOURCE_HAN_SERIF_SC_BOLD: &[u8] = include_bytes!("../fonts/SourceHanSerifSC-Bold.otf");
 
 struct AppState {
     note_service: NoteService,
@@ -316,23 +322,45 @@ fn compile_typst_to_pdf(input_path: String, output_path: String) -> Result<(), S
         return Err("pdf output path cannot be empty".to_string());
     }
 
+    let input_file = Path::new(input);
     let output_file = Path::new(output);
+
     if let Some(parent) = output_file.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
     }
 
-    let status = Command::new("typst")
-        .arg("compile")
-        .arg(input)
-        .arg(output)
-        .status()
-        .map_err(|error| format!("failed to run typst compiler: {error}"))?;
+    let package_dir = input_file
+        .parent()
+        .ok_or_else(|| "cannot resolve export package directory".to_string())?;
 
-    if !status.success() {
-        return Err(format!("typst compile failed with status: {status}"));
-    }
+    let main_source = fs::read_to_string(input_file)
+        .map_err(|error| format!("failed to read typst input: {error}"))?;
+
+    let bundled_font_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fonts");
+
+    let engine = TypstEngine::builder()
+        .main_file(("main.typ", main_source))
+        .fonts([SOURCE_HAN_SERIF_SC_REGULAR, SOURCE_HAN_SERIF_SC_BOLD])
+        .search_fonts_with(
+            TypstKitFontOptions::default()
+                .include_system_fonts(false)
+                .include_dirs([bundled_font_dir]),
+        )
+        .with_file_system_resolver(package_dir.to_path_buf())
+        .with_package_file_resolver()
+        .build();
+
+    let compiled = engine
+        .compile::<PagedDocument>()
+        .output
+        .map_err(|error| format!("embedded typst compile failed: {error}"))?;
+
+    let pdf_bytes = typst_pdf::pdf(&compiled, &Default::default())
+        .map_err(|error| format!("failed to generate pdf bytes: {error:?}"))?;
+
+    fs::write(output_file, pdf_bytes).map_err(|error| error.to_string())?;
 
     Ok(())
 }

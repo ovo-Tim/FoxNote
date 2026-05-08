@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@fontpkg/source-han-serif-sc':
+        specifier: ^2.3.3
+        version: 2.3.3
       '@mdi/font':
         specifier: ^7.4.47
         version: 7.4.47
@@ -447,6 +450,9 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
+
+  '@fontpkg/source-han-serif-sc@2.3.3':
+    resolution: {integrity: sha512-i4XjDhA2tDPkoAMEA40TLmVMG9NM8/Mu89M0LoNpuOLJpmFIGEED9BAcXqLYGRnpvw1E1IKa/sx76ReUcJQoZQ==}
 
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
@@ -2900,6 +2906,8 @@ snapshots:
       react-dom: 19.2.6(react@19.2.6)
 
   '@floating-ui/utils@0.2.11': {}
+
+  '@fontpkg/source-han-serif-sc@2.3.3': {}
 
   '@isaacs/cliui@8.0.2':
     dependencies:

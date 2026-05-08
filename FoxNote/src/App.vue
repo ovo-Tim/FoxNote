@@ -269,8 +269,9 @@ function buildPdfExportDocument(note: NoteRecord, bodyBlocks: string[]): string 
     .join(" #h(6pt) ");
 
   const lines = [
+    '#import "@preview/note-me:0.6.0": *',
     '#set page(margin: (x: 22mm, y: 18mm))',
-    '#set text(font: "New Computer Modern", size: 11pt, fill: rgb("#111827"))',
+    '#set text(font: ("Source Han Serif SC", "New Computer Modern"), size: 11pt, fill: rgb("#111827"))',
     '#show image: set block(breakable: false)',
     `#set document(title: "${escapedTitle}", author: "${escapedAuthor}")`,
     `#let foxnote-meta(title, date, tags) = [`,
@@ -295,6 +296,7 @@ async function buildTypstExportPackage(note: NoteRecord, outputBasePath: string)
   packageDir: string;
   assetsDir: string;
   inputPath: string;
+  runtimePath: string;
   typstSource: string;
   assetWrites: Map<string, { bytes: Uint8Array; mimeType: string }>;
 }> {
@@ -305,6 +307,7 @@ async function buildTypstExportPackage(note: NoteRecord, outputBasePath: string)
     : `${exportStem}.foxnote-export`;
   const assetsDir = `${packageDir}/assets`;
   const inputPath = `${packageDir}/main.typ`;
+  const runtimePath = `${packageDir}/runtime.typ`;
 
   const exportedBlocks = await Promise.all(
     note.document.content.map((block, index) =>
@@ -361,6 +364,7 @@ async function buildTypstExportPackage(note: NoteRecord, outputBasePath: string)
     packageDir,
     assetsDir,
     inputPath,
+    runtimePath,
     typstSource,
     assetWrites,
   };
@@ -369,10 +373,12 @@ async function buildTypstExportPackage(note: NoteRecord, outputBasePath: string)
 async function writeTypstExportPackage(exportPackage: {
   assetsDir: string;
   inputPath: string;
+  runtimePath: string;
   typstSource: string;
   assetWrites: Map<string, { bytes: Uint8Array; mimeType: string }>;
 }) {
   await writeExportFile(exportPackage.inputPath, Array.from(new TextEncoder().encode(exportPackage.typstSource)));
+  await writeExportFile(exportPackage.runtimePath, Array.from(new TextEncoder().encode(exportPackage.typstSource)));
 
   for (const [fileName, asset] of exportPackage.assetWrites.entries()) {
     await writeExportFile(`${exportPackage.assetsDir}/${fileName}`, Array.from(asset.bytes));
@@ -1314,6 +1320,7 @@ onBeforeUnmount(() => {
   clearNoticeTimer();
   clearErrorTimer();
   onSidebarResizeEnd();
+  window.removeEventListener("keydown", onGlobalKeydown);
   window.removeEventListener("resize", syncSidebarConstraints);
 });
 
@@ -1336,6 +1343,7 @@ onMounted(() => {
   }
 
   syncSidebarConstraints();
+  window.addEventListener("keydown", onGlobalKeydown);
   window.addEventListener("resize", syncSidebarConstraints);
   void bootstrap();
 });
@@ -1344,6 +1352,43 @@ function openNoteFromSearch(noteId: string) {
   void selectNote(noteId);
   activeView.value = "notes";
   sidebarCollapsed.value = false;
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target instanceof Element ? target : null;
+  if (!element) {
+    return false;
+  }
+  return Boolean(element.closest("input, textarea, [contenteditable='true']"));
+}
+
+function blurActiveElement() {
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  const key = event.key.toLowerCase();
+
+  if (key === "escape") {
+    blurActiveElement();
+    return;
+  }
+
+  if (!(event.metaKey || event.ctrlKey)) {
+    return;
+  }
+
+  if (key === "s") {
+    if (activeView.value === "notes" && !isEditableTarget(event.target)) {
+      event.preventDefault();
+      if (canCommitCurrentNote.value) {
+        void handleManualCommit();
+      }
+    }
+    return;
+  }
 }
 
 function onNotesRailClick() {
@@ -1468,16 +1513,17 @@ function startSidebarResize(event: MouseEvent) {
                     :disabled="!selectedNoteId || manualCommitBusy" @keydown.enter.prevent="handleManualCommit" />
                 </template>
               </v-tooltip>
-              <v-tooltip text="Commit" location="bottom">
+              <v-tooltip text="Commit (Cmd/Ctrl+S)" location="bottom">
                 <template #activator="{ props }">
                   <v-btn v-bind="props" size="small" variant="flat" icon="mdi-source-commit"
                     :color="canCommitCurrentNote ? 'primary' : undefined"
                     :disabled="!canCommitCurrentNote"
                     :loading="manualCommitBusy"
+                    title="Commit (Cmd/Ctrl+S)"
                     @click="handleManualCommit" />
                 </template>
               </v-tooltip>
-              <v-tooltip text="Show info" location="bottom">
+              <v-tooltip text="Show info (Esc to blur focus)" location="bottom">
                 <template #activator="{ props }">
                   <v-btn v-bind="props" size="small" variant="text" icon="mdi-information-outline"
                     :disabled="!selectedNote" @click="showSelectedNoteInfo" />

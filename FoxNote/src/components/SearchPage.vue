@@ -18,6 +18,7 @@ const includeMode = ref<"all" | "any">("all");
 const searchViewLoading = ref(false);
 const searchViewResults = ref<NoteSearchHit[]>([]);
 const searchRequestToken = ref(0);
+const searchInputRef = ref<HTMLElement | null>(null);
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const tagToneColors = ["#ffba3d", "#ff7f3e", "#cbcbcb", "#43dfda", "#cf87ff"];
@@ -203,17 +204,21 @@ onBeforeUnmount(() => {
     </header>
     <div class="search-controls">
       <v-text-field
+        ref="searchInputRef"
         v-model="searchViewQuery"
         density="comfortable"
         variant="outlined"
         hide-details
         prepend-inner-icon="mdi-magnify"
         placeholder="Search title/content/folder..."
+        title="Search all notes"
+        @keydown.stop
       />
       <v-btn
         variant="text"
         prepend-icon="mdi-close-circle-outline"
         :disabled="!hasSearchContext && !searchViewResults.length"
+        title="Clear search"
         @click="clearSearchViewContext"
       >
         Clear
