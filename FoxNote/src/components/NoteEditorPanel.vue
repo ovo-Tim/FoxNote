@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { loadNoteAttachment, saveNoteAttachment, saveNoteImageAttachment } from "../lib/noteApi";
+import {
+  convertMarkdownTextToTypst,
+  loadNoteAttachment,
+  saveNoteAttachment,
+  saveNoteImageAttachment,
+} from "../lib/noteApi";
 import UnsupportedBlockCard from "./blocks/UnsupportedBlockCard.vue";
 import { createDefaultBlockForType, getBlockPlugin, listBlockPlugins } from "../editor/plugins/registry";
 import { blockPreviewText, cloneBlocks } from "../editor/utils";
@@ -30,6 +35,10 @@ const insertMenuIndex = ref<number | null>(null);
 const slashQuery = ref("");
 const actionMenuIndex = ref<number | null>(null);
 const actionQuery = ref("");
+const markdownImportDialogOpen = ref(false);
+const markdownImportTargetIndex = ref<number | null>(null);
+const markdownImportInput = ref("");
+const markdownImportBusy = ref(false);
 const editingBlockIndex = ref<number | null>(null);
 const isHydratingForm = ref(false);
 const titleEditing = ref(false);
@@ -480,39 +489,46 @@ function buildBlockRenderContext(index: number, block: NoteBlock): BlockRenderCo
   };
 }
 
-function parseTypstTitleCandidate(content: string): { level: number; title: string; body: string } | null {
+function parseTypstTitleCandidate(
+  content: string,
+): { level: number; title: string; before: string; after: string } | null {
   const normalized = content.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
-  let firstNonEmpty = -1;
+  let headingIndex = -1;
+  let headingLevel = 0;
+  let headingTitle = "";
 
   for (let cursor = 0; cursor < lines.length; cursor += 1) {
-    if (lines[cursor]?.trim()) {
-      firstNonEmpty = cursor;
+    const candidate = lines[cursor]?.trim() ?? "";
+    if (!candidate) {
+      continue;
+    }
+
+    const match = candidate.match(/^(={1,6})\s+(.+)$/);
+    if (match) {
+      const title = (match[2] ?? "").trim();
+      if (!title) {
+        continue;
+      }
+
+      headingIndex = cursor;
+      headingLevel = (match[1] ?? "=").length;
+      headingTitle = title;
       break;
     }
   }
 
-  if (firstNonEmpty < 0) {
+  if (headingIndex < 0 || !headingTitle) {
     return null;
   }
 
-  const headingLine = lines[firstNonEmpty]?.trim() ?? "";
-  const match = headingLine.match(/^(={1,6})\s+(.+)$/);
-  if (!match) {
-    return null;
-  }
-
-  const title = (match[2] ?? "").trim();
-  if (!title) {
-    return null;
-  }
-
-  const remainingLines = lines.slice(firstNonEmpty + 1);
-  const body = remainingLines.join("\n").trim();
+  const before = lines.slice(0, headingIndex).join("\n").trim();
+  const after = lines.slice(headingIndex + 1).join("\n").trim();
   return {
-    level: (match[1] ?? "=").length,
-    title,
-    body,
+    level: headingLevel,
+    title: headingTitle,
+    before,
+    after,
   };
 }
 
@@ -528,20 +544,30 @@ function splitTypstHeadingBlock(index: number, content: string): boolean {
   }
 
   const blocks = cloneBlocks(form.content);
-  blocks[index] = {
+  const replacement: NoteBlock[] = [];
+  if (parsed.before) {
+    replacement.push({
+      type: "typst",
+      content: parsed.before,
+    });
+  }
+
+  replacement.push({
     type: "title",
     level: parsed.level,
     content: parsed.title,
     folded: false,
     summary: "",
-  };
+  });
 
-  if (parsed.body) {
-    blocks.splice(index + 1, 0, {
+  if (parsed.after) {
+    replacement.push({
       type: "typst",
-      content: parsed.body,
+      content: parsed.after,
     });
   }
+
+  blocks.splice(index, 1, ...replacement);
 
   form.content = blocks;
   closeSlashMenu();
@@ -676,6 +702,118 @@ function closeSlashMenu() {
   slashQuery.value = "";
 }
 
+function openMarkdownImportDialog(index: number) {
+  logMarkdownImport("open dialog", {
+    index,
+    noteId: props.note?.id ?? null,
+    blockCount: form.content.length,
+  });
+  markdownImportTargetIndex.value = index;
+  markdownImportInput.value = "";
+  markdownImportDialogOpen.value = true;
+  closeSlashMenu();
+  void nextTick(() => {
+    const textarea = document.querySelector<HTMLTextAreaElement>(".markdown-import-input textarea");
+    textarea?.focus();
+  });
+}
+
+function closeMarkdownImportDialog() {
+  if (markdownImportBusy.value) {
+    logMarkdownImport("close dialog ignored because busy", {
+      targetIndex: markdownImportTargetIndex.value,
+    });
+    return;
+  }
+  logMarkdownImport("close dialog", {
+    targetIndex: markdownImportTargetIndex.value,
+    inputLength: markdownImportInput.value.length,
+  });
+  markdownImportDialogOpen.value = false;
+  markdownImportInput.value = "";
+  markdownImportTargetIndex.value = null;
+}
+
+async function confirmMarkdownImport() {
+  logMarkdownImport("confirm clicked", {
+    hasNote: Boolean(props.note),
+    busy: markdownImportBusy.value,
+    inputLength: markdownImportInput.value.length,
+    targetIndex: markdownImportTargetIndex.value,
+  });
+
+  if (!props.note || markdownImportBusy.value) {
+    logMarkdownImport("confirm aborted by guard", {
+      hasNote: Boolean(props.note),
+      busy: markdownImportBusy.value,
+    });
+    return;
+  }
+
+  const markdown = markdownImportInput.value.trim();
+  if (!markdown) {
+    logMarkdownImport("confirm aborted: empty markdown", {
+      rawLength: markdownImportInput.value.length,
+    });
+    return;
+  }
+
+  markdownImportBusy.value = true;
+  logMarkdownImport("conversion started", {
+    markdownLength: markdown.length,
+  });
+  try {
+    const typstSource = await convertMarkdownTextToTypst(markdown);
+    const content = typstSource.trim();
+    logMarkdownImport("conversion finished", {
+      typstLength: typstSource.length,
+      trimmedLength: content.length,
+      typstPreview: typstSource.slice(0, 220),
+    });
+    if (!content) {
+      logMarkdownImport("conversion result empty, closing dialog");
+      closeMarkdownImportDialog();
+      return;
+    }
+
+    const blocks = cloneBlocks(form.content);
+    const baseIndex = markdownImportTargetIndex.value ?? form.content.length - 1;
+    const insertIndex = Math.max(0, Math.min(blocks.length, baseIndex + 1));
+    logMarkdownImport("inserting typst block", {
+      baseIndex,
+      insertIndex,
+      blocksBefore: blocks.length,
+    });
+
+    blocks.splice(insertIndex, 0, {
+      type: "typst",
+      content,
+    });
+
+    form.content = blocks;
+    logMarkdownImport("insert success", {
+      blocksAfter: form.content.length,
+      selectedIndex: insertIndex,
+    });
+    selectOnly(insertIndex);
+    setEditingBlock(insertIndex);
+    closeActionMenu();
+    closeMarkdownImportDialog();
+  } catch (reason) {
+    console.error("[MarkdownImport] failed to import markdown", {
+      reason,
+      markdownLength: markdown.length,
+      targetIndex: markdownImportTargetIndex.value,
+    });
+  } finally {
+    markdownImportBusy.value = false;
+    logMarkdownImport("confirm finished", {
+      dialogOpen: markdownImportDialogOpen.value,
+      busy: markdownImportBusy.value,
+    });
+  }
+}
+
 function openActionMenu(index: number) {
   if (!isBlockSelected(index)) {
     selectOnly(index);
@@ -737,6 +875,7 @@ function removeBlock(index: number) {
   setEditingBlock(null);
   closeSlashMenu();
   closeActionMenu();
+  closeMarkdownImportDialog();
 }
 
 function duplicateBlock(index: number) {
@@ -1105,6 +1244,11 @@ function onKeydown(event: KeyboardEvent) {
   }
 
   if (event.key === "Escape") {
+    if (markdownImportDialogOpen.value) {
+      event.preventDefault();
+      closeMarkdownImportDialog();
+      return;
+    }
     clearSelection();
   }
 }
@@ -1112,6 +1256,14 @@ function onKeydown(event: KeyboardEvent) {
 const FOXNOTE_BLOCKS_MIME = "application/x-foxnote-blocks";
 const FOXNOTE_BLOCKS_TEXT_PREFIX = "FOXNOTE_BLOCKS::";
 const DEBUG_BLOCK_CLIPBOARD = true;
+const DEBUG_MARKDOWN_IMPORT = true;
+
+function logMarkdownImport(message: string, details?: Record<string, unknown>) {
+  if (!DEBUG_MARKDOWN_IMPORT) {
+    return;
+  }
+  console.debug(`[MarkdownImport] ${message}`, details ?? {});
+}
 
 function logBlockClipboard(message: string, details?: Record<string, unknown>) {
   if (!DEBUG_BLOCK_CLIPBOARD) {
@@ -1316,7 +1468,15 @@ function insertTypstBlockFromPaste(text: string) {
 
   const parsedTitle = parseTypstTitleCandidate(pasted);
   if (parsedTitle) {
-    blocks.splice(insertIndex, 0, {
+    const inserted: NoteBlock[] = [];
+    if (parsedTitle.before) {
+      inserted.push({
+        type: "typst",
+        content: parsedTitle.before,
+      });
+    }
+
+    inserted.push({
       type: "title",
       level: parsedTitle.level,
       content: parsedTitle.title,
@@ -1324,19 +1484,19 @@ function insertTypstBlockFromPaste(text: string) {
       summary: "",
     });
 
-    if (parsedTitle.body) {
-      blocks.splice(insertIndex + 1, 0, {
+    if (parsedTitle.after) {
+      inserted.push({
         type: "typst",
-        content: parsedTitle.body,
+        content: parsedTitle.after,
       });
-      form.content = blocks;
-      selectOnly(insertIndex + 1);
-      setEditingBlock(insertIndex + 1);
-    } else {
-      form.content = blocks;
-      selectOnly(insertIndex);
-      setEditingBlock(insertIndex);
     }
+
+    blocks.splice(insertIndex, 0, ...inserted);
+    form.content = blocks;
+
+    const focusIndex = insertIndex + inserted.length - 1;
+    selectOnly(focusIndex);
+    setEditingBlock(focusIndex);
     closeSlashMenu();
     closeActionMenu();
     return;
@@ -1632,6 +1792,7 @@ watch(
       closeActionMenu();
       titleEditing.value = false;
       closeFindBar();
+      closeMarkdownImportDialog();
       isHydratingForm.value = false;
       return;
     }
@@ -1648,6 +1809,7 @@ watch(
     titleEditing.value = false;
     clearSelection();
     closeFindBar();
+    closeMarkdownImportDialog();
     isHydratingForm.value = false;
   },
   { immediate: true },
@@ -1839,6 +2001,10 @@ watch(form, emitChange, { deep: true });
                   <span class="slash-option-label">/{{ plugin.type }}</span>
                   <span class="slash-option-desc">{{ plugin.description }}</span>
                 </button>
+                <button type="button" class="slash-option" @click="openMarkdownImportDialog(index)">
+                  <span class="slash-option-label">/import-md</span>
+                  <span class="slash-option-desc">Import Markdown and convert to Typst block</span>
+                </button>
               </div>
             </div>
           </v-menu>
@@ -1871,6 +2037,24 @@ watch(form, emitChange, { deep: true });
     </section>
 
     <div class="marquee-selection" :style="marqueeStyle" />
+
+    <v-dialog v-model="markdownImportDialogOpen" max-width="760">
+      <v-card>
+        <v-card-title>Import Markdown</v-card-title>
+        <v-card-text>
+          <v-textarea v-model="markdownImportInput" class="markdown-import-input" rows="12" auto-grow variant="outlined"
+            hide-details placeholder="Paste Markdown here..." />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" :disabled="markdownImportBusy" @click="closeMarkdownImportDialog">Cancel</v-btn>
+          <v-btn color="primary" variant="flat" :loading="markdownImportBusy" :disabled="!markdownImportInput.trim()"
+            @click="confirmMarkdownImport">
+            Import as Typst block
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
   </section>
 
@@ -2182,6 +2366,7 @@ watch(form, emitChange, { deep: true });
 .block-shell {
   position: relative;
   margin: 0;
+  margin-right: 3.2rem;
   border-radius: 10px;
   min-height: 2.6rem;
   display: flex;
@@ -2295,6 +2480,7 @@ watch(form, emitChange, { deep: true });
   background: color-mix(in srgb, var(--fox-surface) 93%, black 7%);
   padding: 0.68rem;
   box-shadow: 0 15px 28px rgba(0, 0, 0, 0.34);
+  overflow: auto;
 }
 
 .slash-menu-title {

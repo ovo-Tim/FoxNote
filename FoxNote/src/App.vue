@@ -270,6 +270,7 @@ function buildPdfExportDocument(note: NoteRecord, bodyBlocks: string[]): string 
 
   const lines = [
     '#import "@preview/note-me:0.6.0": *',
+    '#import "@preview/mitex:0.2.7": *',
     '#set page(margin: (x: 22mm, y: 18mm))',
     '#set text(font: ("Source Han Serif SC", "New Computer Modern"), size: 11pt, fill: rgb("#111827"))',
     '#show image: set block(breakable: false)',
@@ -1516,11 +1517,8 @@ function startSidebarResize(event: MouseEvent) {
               <v-tooltip text="Commit (Cmd/Ctrl+S)" location="bottom">
                 <template #activator="{ props }">
                   <v-btn v-bind="props" size="small" variant="flat" icon="mdi-source-commit"
-                    :color="canCommitCurrentNote ? 'primary' : undefined"
-                    :disabled="!canCommitCurrentNote"
-                    :loading="manualCommitBusy"
-                    title="Commit (Cmd/Ctrl+S)"
-                    @click="handleManualCommit" />
+                    :color="canCommitCurrentNote ? 'primary' : undefined" :disabled="!canCommitCurrentNote"
+                    :loading="manualCommitBusy" title="Commit (Cmd/Ctrl+S)" @click="handleManualCommit" />
                 </template>
               </v-tooltip>
               <v-tooltip text="Show info (Esc to blur focus)" location="bottom">
@@ -1533,21 +1531,17 @@ function startSidebarResize(event: MouseEvent) {
                 <template #activator="{ props: menuProps }">
                   <v-tooltip text="Export" location="bottom">
                     <template #activator="{ props: tooltipProps }">
-                      <v-btn
-                        v-bind="{ ...menuProps, ...tooltipProps }"
-                        size="small"
-                        color="primary"
-                        variant="flat"
-                        icon="mdi-export"
-                        :disabled="!selectedNoteId || exportingTypst || exportingPdf"
-                        :loading="exportingTypst || exportingPdf"
-                      />
+                      <v-btn v-bind="{ ...menuProps, ...tooltipProps }" size="small" color="primary" variant="flat"
+                        icon="mdi-export" :disabled="!selectedNoteId || exportingTypst || exportingPdf"
+                        :loading="exportingTypst || exportingPdf" />
                     </template>
                   </v-tooltip>
                 </template>
                 <v-list density="compact">
-                  <v-list-item prepend-icon="mdi-code-braces" title="Export Typst" @click="handleExportSelectedNoteTypst" />
-                  <v-list-item prepend-icon="mdi-file-pdf-box" title="Export PDF" @click="handleExportSelectedNotePdf" />
+                  <v-list-item prepend-icon="mdi-code-braces" title="Export Typst"
+                    @click="handleExportSelectedNoteTypst" />
+                  <v-list-item prepend-icon="mdi-file-pdf-box" title="Export PDF"
+                    @click="handleExportSelectedNotePdf" />
                 </v-list>
               </v-menu>
             </div>

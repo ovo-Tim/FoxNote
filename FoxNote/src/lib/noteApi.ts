@@ -76,6 +76,10 @@ export async function compileTypstToPdf(inputPath: string, outputPath: string): 
   return invoke<void>("compile_typst_to_pdf", { inputPath, outputPath });
 }
 
+export async function convertMarkdownTextToTypst(markdown: string): Promise<string> {
+  return invoke<string>("convert_markdown_text_to_typst", { markdown });
+}
+
 export async function saveNoteImageAttachment(
   id: string,
   mimeType: string,
