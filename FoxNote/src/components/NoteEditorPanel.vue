@@ -489,47 +489,58 @@ function buildBlockRenderContext(index: number, block: NoteBlock): BlockRenderCo
   };
 }
 
-function parseTypstTitleCandidate(
-  content: string,
-): { level: number; title: string; before: string; after: string } | null {
+function splitTypstContentIntoBlocks(content: string): NoteBlock[] | null {
   const normalized = content.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
-  let headingIndex = -1;
-  let headingLevel = 0;
-  let headingTitle = "";
+  const blocks: NoteBlock[] = [];
+  const typstLines: string[] = [];
+  let foundHeading = false;
 
-  for (let cursor = 0; cursor < lines.length; cursor += 1) {
-    const candidate = lines[cursor]?.trim() ?? "";
-    if (!candidate) {
-      continue;
+  const flushTypstLines = () => {
+    const chunk = typstLines.join("\n").trim();
+    typstLines.length = 0;
+    if (!chunk) {
+      return;
     }
 
-    const match = candidate.match(/^(={1,6})\s+(.+)$/);
+    blocks.push({
+      type: "typst",
+      content: chunk,
+    });
+  };
+
+  for (let cursor = 0; cursor < lines.length; cursor += 1) {
+    const line = lines[cursor] ?? "";
+    const match = line.trim().match(/^(={1,6})\s+(.+)$/);
     if (match) {
       const title = (match[2] ?? "").trim();
       if (!title) {
+        typstLines.push(line);
         continue;
       }
 
-      headingIndex = cursor;
-      headingLevel = (match[1] ?? "=").length;
-      headingTitle = title;
-      break;
+      flushTypstLines();
+      blocks.push({
+        type: "title",
+        level: (match[1] ?? "=").length,
+        content: title,
+        folded: false,
+        summary: "",
+      });
+      foundHeading = true;
+      continue;
     }
+
+    typstLines.push(line);
   }
 
-  if (headingIndex < 0 || !headingTitle) {
+  flushTypstLines();
+
+  if (!foundHeading || blocks.length === 0) {
     return null;
   }
 
-  const before = lines.slice(0, headingIndex).join("\n").trim();
-  const after = lines.slice(headingIndex + 1).join("\n").trim();
-  return {
-    level: headingLevel,
-    title: headingTitle,
-    before,
-    after,
-  };
+  return blocks;
 }
 
 function splitTypstHeadingBlock(index: number, content: string): boolean {
@@ -538,35 +549,12 @@ function splitTypstHeadingBlock(index: number, content: string): boolean {
     return false;
   }
 
-  const parsed = parseTypstTitleCandidate(content);
-  if (!parsed) {
+  const replacement = splitTypstContentIntoBlocks(content);
+  if (!replacement) {
     return false;
   }
 
   const blocks = cloneBlocks(form.content);
-  const replacement: NoteBlock[] = [];
-  if (parsed.before) {
-    replacement.push({
-      type: "typst",
-      content: parsed.before,
-    });
-  }
-
-  replacement.push({
-    type: "title",
-    level: parsed.level,
-    content: parsed.title,
-    folded: false,
-    summary: "",
-  });
-
-  if (parsed.after) {
-    replacement.push({
-      type: "typst",
-      content: parsed.after,
-    });
-  }
-
   blocks.splice(index, 1, ...replacement);
 
   form.content = blocks;
@@ -1466,31 +1454,8 @@ function insertTypstBlockFromPaste(text: string) {
   const baseIndex = selectedBlocks.value[selectedBlocks.value.length - 1] ?? form.content.length - 1;
   const insertIndex = Math.max(0, Math.min(blocks.length, baseIndex + 1));
 
-  const parsedTitle = parseTypstTitleCandidate(pasted);
-  if (parsedTitle) {
-    const inserted: NoteBlock[] = [];
-    if (parsedTitle.before) {
-      inserted.push({
-        type: "typst",
-        content: parsedTitle.before,
-      });
-    }
-
-    inserted.push({
-      type: "title",
-      level: parsedTitle.level,
-      content: parsedTitle.title,
-      folded: false,
-      summary: "",
-    });
-
-    if (parsedTitle.after) {
-      inserted.push({
-        type: "typst",
-        content: parsedTitle.after,
-      });
-    }
-
+  const inserted = splitTypstContentIntoBlocks(pasted);
+  if (inserted) {
     blocks.splice(insertIndex, 0, ...inserted);
     form.content = blocks;
 

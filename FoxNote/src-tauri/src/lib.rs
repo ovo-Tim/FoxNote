@@ -1,6 +1,7 @@
 mod core;
 
 use core::{
+    markdown::convert_markdown_to_typst,
     notes::{
         ExportTypstResult, FolderEntry, NoteAttachmentPayload, NoteDocument, NoteRecord,
         NoteService, NoteTree, SaveNoteInput,
@@ -104,181 +105,6 @@ fn sync_indexes_from_notes(
 ) -> Result<(), String> {
     sync_tag_index_from_notes(note_service, tag_service)?;
     sync_search_index_from_notes(note_service, search_service)
-}
-
-fn typst_raw_literal(input: &str) -> String {
-    let mut fence_len = 1usize;
-    while input.contains(&"`".repeat(fence_len)) {
-        fence_len += 1;
-    }
-
-    let fence = "`".repeat(fence_len);
-    format!("{fence}{input}{fence}")
-}
-
-fn inline_latex_to_typst(latex: &str) -> String {
-    let trimmed = latex.trim();
-    if trimmed.is_empty() {
-        return "$ $".to_string();
-    }
-
-    format!("#mi({})", typst_raw_literal(trimmed))
-}
-
-fn block_latex_to_typst(latex: &str) -> String {
-    let trimmed = latex.trim();
-    if trimmed.is_empty() {
-        return "".to_string();
-    }
-
-    format!("#mitex({})", typst_raw_literal(trimmed))
-}
-
-fn convert_inline_latex_math(input: &str) -> String {
-    let chars: Vec<char> = input.chars().collect();
-    let mut result = String::new();
-    let mut index = 0;
-
-    while index < chars.len() {
-        let current = chars[index];
-        if current == '$' && (index == 0 || chars[index - 1] != '\\') {
-            let mut end = index + 1;
-            while end < chars.len() {
-                if chars[end] == '$' && chars[end - 1] != '\\' {
-                    break;
-                }
-                end += 1;
-            }
-
-            if end < chars.len() {
-                let latex: String = chars[index + 1..end].iter().collect();
-                result.push_str(&inline_latex_to_typst(&latex));
-                index = end + 1;
-                continue;
-            }
-        }
-
-        result.push(current);
-        index += 1;
-    }
-
-    result
-}
-
-fn convert_markdown_to_typst(markdown: &str) -> String {
-    let normalized = markdown.replace("\r\n", "\n");
-    let lines: Vec<&str> = normalized.split('\n').collect();
-    let mut output: Vec<String> = Vec::new();
-    let mut index = 0;
-    let mut in_code_fence = false;
-
-    while index < lines.len() {
-        let line = lines[index];
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("```") {
-            in_code_fence = !in_code_fence;
-            output.push(trimmed.to_string());
-            index += 1;
-            continue;
-        }
-
-        if in_code_fence {
-            output.push(line.to_string());
-            index += 1;
-            continue;
-        }
-
-        if trimmed.starts_with("$$") {
-            let mut block_math = String::new();
-            let mut closed = false;
-
-            if trimmed != "$$" {
-                block_math.push_str(trimmed.trim_start_matches("$$"));
-                if block_math.ends_with("$$") {
-                    block_math.truncate(block_math.len().saturating_sub(2));
-                    closed = true;
-                }
-            }
-
-            index += 1;
-            while !closed && index < lines.len() {
-                let math_line = lines[index];
-                if math_line.trim_end().ends_with("$$") {
-                    let content = math_line.trim_end_matches('$');
-                    if !block_math.is_empty() && !content.is_empty() {
-                        block_math.push('\n');
-                    }
-                    block_math.push_str(content);
-                    index += 1;
-                    break;
-                }
-
-                if !block_math.is_empty() {
-                    block_math.push('\n');
-                }
-                block_math.push_str(math_line);
-                index += 1;
-            }
-
-            let converted = block_latex_to_typst(block_math.trim());
-            if !converted.is_empty() {
-                output.push(converted);
-            }
-            continue;
-        }
-
-        if trimmed.starts_with('#') {
-            let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-            let title = trimmed[level..].trim();
-            if (1..=6).contains(&level) && !title.is_empty() {
-                output.push(format!(
-                    "{} {}",
-                    "=".repeat(level),
-                    convert_inline_latex_math(title)
-                ));
-                index += 1;
-                continue;
-            }
-        }
-
-        if let Some(rest) = trimmed
-            .strip_prefix("- ")
-            .or_else(|| trimmed.strip_prefix("* "))
-            .or_else(|| trimmed.strip_prefix("+ "))
-        {
-            output.push(format!("- {}", convert_inline_latex_math(rest.trim())));
-            index += 1;
-            continue;
-        }
-
-        let ordered_start = trimmed
-            .char_indices()
-            .find(|(_, ch)| !ch.is_ascii_digit())
-            .map(|(idx, ch)| (idx, ch));
-        if let Some((marker_index, marker)) = ordered_start {
-            if (marker == '.' || marker == ')') && trimmed[marker_index + 1..].starts_with(' ') {
-                let item = trimmed[marker_index + 2..].trim();
-                output.push(format!("+ {}", convert_inline_latex_math(item)));
-                index += 1;
-                continue;
-            }
-        }
-
-        if let Some(rest) = trimmed.strip_prefix(">") {
-            output.push(format!(
-                "#quote[{}]",
-                convert_inline_latex_math(rest.trim())
-            ));
-            index += 1;
-            continue;
-        }
-
-        output.push(convert_inline_latex_math(line));
-        index += 1;
-    }
-
-    output.join("\n").trim().to_string()
 }
 
 #[tauri::command]
@@ -514,6 +340,7 @@ fn compile_typst_to_pdf(input_path: String, output_path: String) -> Result<(), S
         .map_err(|error| format!("failed to read typst input: {error}"))?;
 
     let bundled_font_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fonts");
+    let package_fonts_dir = package_dir.join("fonts");
 
     let engine = TypstEngine::builder()
         .main_file(("main.typ", main_source))
@@ -521,7 +348,7 @@ fn compile_typst_to_pdf(input_path: String, output_path: String) -> Result<(), S
         .search_fonts_with(
             TypstKitFontOptions::default()
                 .include_system_fonts(false)
-                .include_dirs([bundled_font_dir]),
+                .include_dirs([bundled_font_dir, package_fonts_dir]),
         )
         .with_file_system_resolver(package_dir.to_path_buf())
         .with_package_file_resolver()

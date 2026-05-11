@@ -310,8 +310,8 @@ function onInput(value: string) {
           <v-textarea :model-value="modelValue" rows="3" max-rows="16" auto-grow hide-details density="compact"
             variant="solo-filled" class="code-input" @update:model-value="(value) => onInput(String(value ?? ''))"
             placeholder="Input typst code here..."
-            title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo" @blur="emit('blur')"
-            @keydown="onEditorKeydown" />
+            title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
+            @blur="emit('blur')" @keydown="onEditorKeydown" />
         </div>
 
         <div ref="previewHostRef" class="pane preview-pane">
@@ -373,6 +373,7 @@ function onInput(value: string) {
 
 .code-input {
   font-family: "Iosevka", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  height: 100%;
 }
 
 .preview-pane {
@@ -393,8 +394,8 @@ function onInput(value: string) {
   background: transparent;
   border: 0;
   box-shadow: none;
-  overflow: auto;
-  max-height: min(70vh, 820px);
+  overflow: visible;
+  max-height: none;
   width: 100%;
   min-width: 0;
 }

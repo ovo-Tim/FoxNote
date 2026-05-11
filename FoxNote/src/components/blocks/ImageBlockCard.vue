@@ -65,10 +65,21 @@ const frameHeight = computed(() => {
   return Math.max(140, Math.min(2048, imageHeight.value));
 });
 
-const frameStyle = computed(() => ({
-  width: `${frameWidth.value}px`,
-  height: `${frameHeight.value}px`,
-}));
+const hasExplicitHeight = computed(() => Math.round(Number(props.height) || 0) >= 120);
+
+const frameStyle = computed(() => {
+  if (hasExplicitHeight.value) {
+    return {
+      width: `${frameWidth.value}px`,
+      height: `${frameHeight.value}px`,
+    };
+  }
+
+  return {
+    width: `${frameWidth.value}px`,
+    height: "auto",
+  };
+});
 
 const editorFrameStyle = computed(() => ({
   width: `${frameWidth.value}px`,
