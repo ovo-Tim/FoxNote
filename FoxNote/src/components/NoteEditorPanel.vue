@@ -2582,6 +2582,57 @@ watch(form, emitChange, { deep: true });
 }
 
 @media (max-width: 760px) {
+  .editor-pane {
+    width: 100%;
+    padding: 0.35rem 0 0.65rem;
+  }
+
+  .meta-wrap {
+    padding-left: 0.2rem;
+  }
+
+  .title-display,
+  .title-input {
+    font-size: clamp(1.6rem, 7.2vw, 2.15rem);
+    line-height: 1.12;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .meta-line {
+    font-size: 0.9rem;
+    gap: 0.28rem;
+  }
+
+  .block-stack {
+    margin-top: 0.7rem;
+    gap: 0.28rem;
+  }
+
+  .block-shell {
+    margin-right: 0.2rem;
+  }
+
+  .block-hover-actions {
+    margin-left: 0.18rem;
+  }
+
+  .round-action-btn.add-btn {
+    width: 24px;
+    height: 24px;
+  }
+
+  .round-action-btn.menu-btn {
+    width: 18px;
+    height: 26px;
+  }
+
+  .tag-menu,
+  .slash-menu,
+  .action-menu {
+    width: min(100vw - 1.1rem, 360px);
+  }
+
   .note-find-bar {
     position: static;
     width: auto;

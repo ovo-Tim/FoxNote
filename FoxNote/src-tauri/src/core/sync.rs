@@ -1,24 +1,29 @@
 use chrono::Local;
+use git2::{
+    build::CheckoutBuilder, Config, Cred, CredentialType, ErrorCode, FetchOptions, IndexAddOption,
+    MergeOptions, PushOptions, RemoteCallbacks, Repository, Signature, Status, StatusOptions,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::Mutex,
 };
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SyncError {
-    #[error("failed to run git: {0}")]
-    GitIo(#[from] std::io::Error),
-    #[error("git command failed: {0}")]
-    GitCommand(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("git operation failed: {0}")]
+    Git(#[from] git2::Error),
     #[error("sync repository is not initialized")]
     RepoNotInitialized,
     #[error("sync remote is not configured")]
     RemoteNotConfigured,
+    #[error("sync merge conflict detected")]
+    MergeConflict,
     #[error("no conflicting files found for '{0}'")]
     ConflictNotFound(String),
     #[error("sync state lock poisoned")]
@@ -175,11 +180,13 @@ impl SyncService {
 
     pub fn init_repo(&self) -> Result<SyncStatus, SyncError> {
         if !self.is_repo_initialized() {
-            self.run_git(&["init"])?;
+            fs::create_dir_all(&self.repo_root)?;
+            let _ = Repository::init(&self.repo_root)?;
         }
 
         if self.current_branch().is_err() {
-            self.run_git(&["checkout", "-b", "main"])?;
+            let repo = self.repository()?;
+            repo.set_head("refs/heads/main")?;
         }
 
         if self.remote_url()?.is_some() {
@@ -210,11 +217,8 @@ impl SyncService {
             );
         }
 
-        if self.remote_url()?.is_some() {
-            self.run_git(&["remote", "set-url", "origin", trimmed])?;
-        } else {
-            self.run_git(&["remote", "add", "origin", trimmed])?;
-        }
+        let repo = self.repository()?;
+        self.set_origin_remote(&repo, trimmed)?;
 
         self.status()
     }
@@ -235,22 +239,23 @@ impl SyncService {
             )?);
         }
 
-        self.run_git(&["add", "-A"])?;
+        let repo = self.repository()?;
+        self.stage_all(&repo)?;
         if self.has_staged_changes()? {
             let message = format!("FoxNote sync {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
-            self.run_git(&["commit", "-m", &message])?;
+            self.commit_all(&repo, &message)?;
         }
 
         if !self.has_any_commit()? {
-            self.run_git(&["commit", "--allow-empty", "-m", "FoxNote sync bootstrap"])?;
+            self.commit_all(&repo, "FoxNote sync bootstrap")?;
         }
 
-        self.run_git(&["fetch", "origin"])?;
+        self.fetch_origin(&repo)?;
         let branch = self.current_branch().unwrap_or_else(|_| "main".to_string());
         let remote_branch = format!("origin/{branch}");
 
         if self.remote_branch_exists(&remote_branch)? {
-            let merge_result = self.run_git(&["merge", "--no-edit", &remote_branch]);
+            let merge_result = self.merge_remote_branch(&repo, &branch);
             if merge_result.is_err() && !self.collect_conflicts()?.is_empty() {
                 return Ok(self.with_message(
                     SyncPhase::Conflict,
@@ -260,7 +265,7 @@ impl SyncService {
             merge_result?;
         }
 
-        self.run_git(&["push", "origin", &branch])?;
+        self.push_branch(&repo, &branch)?;
 
         let mut runtime = self.runtime.lock().map_err(|_| SyncError::StatePoisoned)?;
         runtime.last_sync_at = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
@@ -284,8 +289,10 @@ impl SyncService {
             );
         }
 
+        let repo = self.repository()?;
         let branch = self.current_branch().unwrap_or_else(|_| "main".to_string());
-        let pull_result = self.run_git(&["pull", "--no-edit", "origin", &branch]);
+        self.fetch_origin(&repo)?;
+        let pull_result = self.merge_remote_branch(&repo, &branch);
         if pull_result.is_err() && !self.collect_conflicts()?.is_empty() {
             return Ok(self.with_message(
                 SyncPhase::Conflict,
@@ -312,13 +319,14 @@ impl SyncService {
             );
         }
 
-        self.run_git(&["add", "-A"])?;
+        let repo = self.repository()?;
+        self.stage_all(&repo)?;
         if self.has_staged_changes()? {
             let message = format!(
                 "FoxNote upload {}",
                 Local::now().format("%Y-%m-%d %H:%M:%S")
             );
-            self.run_git(&["commit", "-m", &message])?;
+            self.commit_all(&repo, &message)?;
         }
 
         let pull_status = self.pull_only()?;
@@ -330,7 +338,7 @@ impl SyncService {
         }
 
         let branch = self.current_branch().unwrap_or_else(|_| "main".to_string());
-        self.run_git(&["push", "origin", &branch])?;
+        self.push_branch(&repo, &branch)?;
 
         let mut runtime = self.runtime.lock().map_err(|_| SyncError::StatePoisoned)?;
         runtime.last_sync_at = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
@@ -350,7 +358,8 @@ impl SyncService {
             );
         }
 
-        self.run_git(&["add", "-A"])?;
+        let repo = self.repository()?;
+        self.stage_all(&repo)?;
         if !self.has_staged_changes()? {
             return self.with_message(SyncPhase::Idle, "No changes to commit");
         }
@@ -362,7 +371,7 @@ impl SyncService {
             normalized
         };
 
-        self.run_git(&["commit", "-m", commit_message])?;
+        self.commit_all(&repo, commit_message)?;
 
         let mut runtime = self.runtime.lock().map_err(|_| SyncError::StatePoisoned)?;
         runtime.last_sync_at = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
@@ -381,13 +390,15 @@ impl SyncService {
             return Ok(false);
         }
 
-        let output = self.run_git_output(&["status", "--porcelain", "--", &note_path])?;
-        if !output.status.success() {
-            return Ok(false);
-        }
+        let repo = self.repository()?;
+        let mut options = StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .pathspec(&note_path);
 
-        let has_changes = !String::from_utf8_lossy(&output.stdout).trim().is_empty();
-        Ok(has_changes)
+        let statuses = repo.statuses(Some(&mut options))?;
+        Ok(!statuses.is_empty())
     }
 
     pub fn commit_note_only(&self, note_id: &str, message: &str) -> Result<SyncStatus, SyncError> {
@@ -406,7 +417,8 @@ impl SyncService {
             return self.with_message(SyncPhase::Idle, "No changes to commit");
         }
 
-        self.run_git(&["add", "-A", "--", &note_path])?;
+        let repo = self.repository()?;
+        self.stage_path(&repo, &note_path)?;
         if !self.note_has_changes(&note_path)? {
             return self.with_message(SyncPhase::Idle, "No changes to commit");
         }
@@ -418,7 +430,7 @@ impl SyncService {
             normalized
         };
 
-        self.run_git(&["commit", "-m", commit_message, "--", &note_path])?;
+        self.commit_all(&repo, commit_message)?;
 
         let mut runtime = self.runtime.lock().map_err(|_| SyncError::StatePoisoned)?;
         runtime.last_sync_at = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
@@ -438,10 +450,26 @@ impl SyncService {
             return Err(SyncError::ConflictNotFound(note_id.to_string()));
         }
 
-        let flag = if use_local { "--ours" } else { "--theirs" };
+        let repo = self.repository()?;
         for file in files {
-            self.run_git(&["checkout", flag, "--", &file])?;
-            self.run_git(&["add", "--", &file])?;
+            let mut checkout = CheckoutBuilder::new();
+            checkout.force().path(&file);
+            if use_local {
+                checkout.use_ours(true);
+            } else {
+                checkout.use_theirs(true);
+            }
+            repo.checkout_index(None, Some(&mut checkout))?;
+
+            let mut index = repo.index()?;
+            let rel = Path::new(&file);
+            let _ = index.conflict_remove(rel);
+            if self.repo_root.join(rel).exists() {
+                index.add_path(rel)?;
+            } else {
+                let _ = index.remove_path(rel);
+            }
+            index.write()?;
         }
 
         self.with_message(SyncPhase::Conflict, "Conflict choice applied")
@@ -453,12 +481,13 @@ impl SyncService {
             return Ok(self.with_message(SyncPhase::Conflict, "Unresolved conflicts remain")?);
         }
 
+        let repo = self.repository()?;
         if self.merge_head_exists() {
-            self.run_git(&["commit", "--no-edit"])?;
+            self.finalize_merge_state_commit(&repo)?;
         }
 
         let branch = self.current_branch().unwrap_or_else(|_| "main".to_string());
-        self.run_git(&["push", "origin", &branch])?;
+        self.push_branch(&repo, &branch)?;
 
         let mut runtime = self.runtime.lock().map_err(|_| SyncError::StatePoisoned)?;
         runtime.last_sync_at = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
@@ -483,46 +512,85 @@ impl SyncService {
     }
 
     fn current_branch(&self) -> Result<String, SyncError> {
-        self.run_git(&["symbolic-ref", "--short", "HEAD"])
-            .map(|text| text.trim().to_string())
+        let repo = self.repository()?;
+        let head = repo.head()?;
+        let branch = head
+            .shorthand()
+            .ok_or_else(|| git2::Error::from_str("unable to resolve current branch"))?;
+        Ok(branch.to_string())
     }
 
     fn remote_url(&self) -> Result<Option<String>, SyncError> {
-        match self.run_git(&["remote", "get-url", "origin"]) {
-            Ok(url) => {
-                let trimmed = url.trim();
-                if trimmed.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(trimmed.to_string()))
-                }
-            }
-            Err(SyncError::GitCommand(_)) => Ok(None),
-            Err(error) => Err(error),
-        }
+        let repo = self.repository()?;
+        let result = match repo.find_remote("origin") {
+            Ok(remote) => Ok(remote
+                .url()
+                .map(str::to_string)
+                .filter(|url| !url.trim().is_empty())),
+            Err(error) if error.code() == ErrorCode::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        };
+        result
     }
 
     fn has_staged_changes(&self) -> Result<bool, SyncError> {
-        let output = self.run_git_output(&["diff", "--cached", "--quiet"])?;
-        Ok(!output.status.success())
+        let repo = self.repository()?;
+        let mut options = StatusOptions::new();
+        options
+            .include_untracked(false)
+            .recurse_untracked_dirs(false)
+            .renames_head_to_index(true);
+
+        let staged_mask = Status::INDEX_NEW
+            | Status::INDEX_MODIFIED
+            | Status::INDEX_DELETED
+            | Status::INDEX_RENAMED
+            | Status::INDEX_TYPECHANGE;
+
+        let statuses = repo.statuses(Some(&mut options))?;
+        Ok(statuses
+            .iter()
+            .any(|entry| entry.status().intersects(staged_mask)))
     }
 
     fn has_any_commit(&self) -> Result<bool, SyncError> {
-        let output = self.run_git_output(&["rev-parse", "--verify", "HEAD"])?;
-        Ok(output.status.success())
+        let repo = self.repository()?;
+        let has_commit = repo.head().ok().and_then(|head| head.target()).is_some();
+        Ok(has_commit)
     }
 
     fn remote_branch_exists(&self, remote_branch: &str) -> Result<bool, SyncError> {
-        let output = self.run_git_output(&["rev-parse", "--verify", remote_branch])?;
-        Ok(output.status.success())
+        let repo = self.repository()?;
+        let full_ref = format!("refs/remotes/{remote_branch}");
+        let result = match repo.find_reference(&full_ref) {
+            Ok(_) => Ok(true),
+            Err(error) if error.code() == ErrorCode::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        };
+        result
     }
 
     fn collect_conflicts(&self) -> Result<Vec<SyncConflict>, SyncError> {
-        let output = self.run_git(&["diff", "--name-only", "--diff-filter=U"])?;
-        let files = output
-            .lines()
-            .map(|line| line.trim().to_string())
-            .filter(|line| !line.is_empty())
+        if !self.is_repo_initialized() {
+            return Ok(Vec::new());
+        }
+
+        let repo = self.repository()?;
+        let index = repo.index()?;
+        let conflicts_iter = index.conflicts()?;
+
+        let files = conflicts_iter
+            .filter_map(|entry| {
+                entry.ok().and_then(|conflict| {
+                    conflict
+                        .our
+                        .as_ref()
+                        .or(conflict.their.as_ref())
+                        .or(conflict.ancestor.as_ref())
+                        .map(|index_entry| String::from_utf8_lossy(&index_entry.path).to_string())
+                })
+            })
+            .filter(|line| !line.trim().is_empty())
             .collect::<Vec<String>>();
 
         let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -549,33 +617,228 @@ impl SyncService {
         Ok(files)
     }
 
-    fn run_git(&self, args: &[&str]) -> Result<String, SyncError> {
-        let output = self.run_git_output(args)?;
-        if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    fn repository(&self) -> Result<Repository, SyncError> {
+        fs::create_dir_all(&self.repo_root)?;
+        match Repository::open(&self.repo_root) {
+            Ok(repo) => Ok(repo),
+            Err(error) if error.code() == ErrorCode::NotFound => Err(SyncError::RepoNotInitialized),
+            Err(error) => Err(error.into()),
         }
-
-        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let command = format!("git {}", args.join(" "));
-        Err(SyncError::GitCommand(if error.is_empty() {
-            command
-        } else {
-            format!("{command}: {error}")
-        }))
     }
 
-    fn run_git_output(&self, args: &[&str]) -> Result<std::process::Output, SyncError> {
-        fs::create_dir_all(&self.repo_root)?;
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.repo_root)
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "FoxNote")
-            .env("GIT_AUTHOR_EMAIL", "foxnote@local")
-            .env("GIT_COMMITTER_NAME", "FoxNote")
-            .env("GIT_COMMITTER_EMAIL", "foxnote@local")
-            .output()?;
-        Ok(output)
+    fn signature(&self) -> Result<Signature<'static>, SyncError> {
+        Ok(Signature::now("FoxNote", "foxnote@local")?)
+    }
+
+    fn remote_callbacks(&self) -> RemoteCallbacks<'static> {
+        let mut callbacks = RemoteCallbacks::new();
+        callbacks.credentials(|url, username_from_url, allowed_types| {
+            if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT)
+                || allowed_types.contains(CredentialType::DEFAULT)
+            {
+                if let Ok(config) = Config::open_default() {
+                    if let Ok(cred) = Cred::credential_helper(&config, url, username_from_url) {
+                        return Ok(cred);
+                    }
+                }
+            }
+
+            if allowed_types.contains(CredentialType::SSH_KEY) {
+                if let Some(username) = username_from_url {
+                    if let Ok(cred) = Cred::ssh_key_from_agent(username) {
+                        return Ok(cred);
+                    }
+                }
+                if let Ok(cred) = Cred::ssh_key_from_agent("git") {
+                    return Ok(cred);
+                }
+            }
+
+            if allowed_types.contains(CredentialType::USERNAME) {
+                if let Some(username) = username_from_url {
+                    return Cred::username(username);
+                }
+                return Cred::username("git");
+            }
+
+            Cred::default()
+        });
+        callbacks
+    }
+
+    fn stage_all(&self, repo: &Repository) -> Result<(), SyncError> {
+        let mut index = repo.index()?;
+        index.add_all(["*"], IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        Ok(())
+    }
+
+    fn stage_path(&self, repo: &Repository, path: &str) -> Result<(), SyncError> {
+        let mut index = repo.index()?;
+        index.add_all([path], IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        Ok(())
+    }
+
+    fn commit_all(&self, repo: &Repository, message: &str) -> Result<(), SyncError> {
+        let signature = self.signature()?;
+        let mut index = repo.index()?;
+        let tree_oid = index.write_tree()?;
+        let tree = repo.find_tree(tree_oid)?;
+
+        if let Ok(head) = repo.head() {
+            if let Ok(parent) = head.peel_to_commit() {
+                repo.commit(
+                    Some("HEAD"),
+                    &signature,
+                    &signature,
+                    message,
+                    &tree,
+                    &[&parent],
+                )?;
+                return Ok(());
+            }
+        }
+
+        repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])?;
+        Ok(())
+    }
+
+    fn set_origin_remote(&self, repo: &Repository, url: &str) -> Result<(), SyncError> {
+        match repo.find_remote("origin") {
+            Ok(_) => {
+                repo.remote_set_url("origin", url)?;
+            }
+            Err(error) if error.code() == ErrorCode::NotFound => {
+                let _ = repo.remote("origin", url)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    fn fetch_origin(&self, repo: &Repository) -> Result<(), SyncError> {
+        let mut remote = repo.find_remote("origin")?;
+        let mut fetch_options = FetchOptions::new();
+        fetch_options.remote_callbacks(self.remote_callbacks());
+        remote.fetch(&[] as &[&str], Some(&mut fetch_options), None)?;
+        Ok(())
+    }
+
+    fn merge_remote_branch(&self, repo: &Repository, branch: &str) -> Result<(), SyncError> {
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        let reference = match repo.find_reference(&remote_ref) {
+            Ok(reference) => reference,
+            Err(error) if error.code() == ErrorCode::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+
+        let annotated = repo.reference_to_annotated_commit(&reference)?;
+        let (analysis, _) = repo.merge_analysis(&[&annotated])?;
+
+        if analysis.is_up_to_date() {
+            return Ok(());
+        }
+
+        if analysis.is_fast_forward() {
+            let target = annotated.id();
+            self.fast_forward(repo, branch, target)?;
+            return Ok(());
+        }
+
+        if analysis.is_normal() {
+            let mut merge_options = MergeOptions::new();
+            let mut checkout = CheckoutBuilder::new();
+            checkout
+                .allow_conflicts(true)
+                .conflict_style_merge(true)
+                .safe();
+
+            repo.merge(&[&annotated], Some(&mut merge_options), Some(&mut checkout))?;
+
+            let index = repo.index()?;
+            if index.has_conflicts() {
+                return Err(SyncError::MergeConflict);
+            }
+
+            self.finalize_merge_state_commit(repo)?;
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    fn fast_forward(
+        &self,
+        repo: &Repository,
+        branch: &str,
+        target: git2::Oid,
+    ) -> Result<(), SyncError> {
+        let local_ref = format!("refs/heads/{branch}");
+        match repo.find_reference(&local_ref) {
+            Ok(mut reference) => {
+                reference.set_target(target, "Fast-forward")?;
+            }
+            Err(error) if error.code() == ErrorCode::NotFound => {
+                let _ = repo.reference(&local_ref, target, true, "Create branch")?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        repo.set_head(&local_ref)?;
+        let mut checkout = CheckoutBuilder::new();
+        checkout.force();
+        repo.checkout_head(Some(&mut checkout))?;
+        Ok(())
+    }
+
+    fn finalize_merge_state_commit(&self, repo: &Repository) -> Result<(), SyncError> {
+        if !self.merge_head_exists() {
+            return Ok(());
+        }
+
+        let merge_head_path = repo.path().join("MERGE_HEAD");
+        let merge_head_text = fs::read_to_string(merge_head_path)?;
+        let merge_head_oid = merge_head_text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .ok_or_else(|| git2::Error::from_str("MERGE_HEAD is empty"))?
+            .trim()
+            .parse::<git2::Oid>()?;
+
+        let head_commit = repo.head()?.peel_to_commit()?;
+        let merge_commit = repo.find_commit(merge_head_oid)?;
+
+        let mut index = repo.index()?;
+        let tree_oid = index.write_tree()?;
+        let tree = repo.find_tree(tree_oid)?;
+
+        let signature = self.signature()?;
+        let message = repo
+            .message()
+            .unwrap_or_else(|_| "Merge commit".to_string());
+
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            &message,
+            &tree,
+            &[&head_commit, &merge_commit],
+        )?;
+
+        repo.checkout_head(Some(CheckoutBuilder::new().safe()))?;
+        repo.cleanup_state()?;
+        Ok(())
+    }
+
+    fn push_branch(&self, repo: &Repository, branch: &str) -> Result<(), SyncError> {
+        let mut remote = repo.find_remote("origin")?;
+        let mut push_options = PushOptions::new();
+        push_options.remote_callbacks(self.remote_callbacks());
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        remote.push(&[refspec.as_str()], Some(&mut push_options))?;
+        Ok(())
     }
 
     fn config_path(&self) -> PathBuf {
@@ -639,7 +902,8 @@ impl SyncService {
             .clone();
 
         if let Some(remote_url) = configured_remote {
-            self.run_git(&["remote", "add", "origin", &remote_url])?;
+            let repo = self.repository()?;
+            self.set_origin_remote(&repo, &remote_url)?;
         }
 
         Ok(())

@@ -88,6 +88,8 @@ const sidebarWidth = ref(300);
 const sidebarCollapsed = ref(false);
 const sidebarResizing = ref(false);
 const workspaceWidth = ref(0);
+const isNarrowLayout = ref(false);
+const mobileTopBarExpanded = ref(false);
 const noteInfoDialogOpen = ref(false);
 const exportingTypst = ref(false);
 const exportingPdf = ref(false);
@@ -393,6 +395,20 @@ function resetManualCommitMessage() {
 }
 
 const notesWorkspaceStyle = computed(() => {
+  if (isNarrowLayout.value) {
+    if (sidebarCollapsed.value) {
+      return {
+        gridTemplateColumns: "minmax(0, 1fr)",
+        gridTemplateRows: "0 minmax(0, 1fr)",
+      };
+    }
+
+    return {
+      gridTemplateColumns: "minmax(0, 1fr)",
+      gridTemplateRows: "minmax(180px, 40vh) minmax(0, 1fr)",
+    };
+  }
+
   const clamped = clampSidebarWidth(sidebarWidth.value);
   if (sidebarCollapsed.value) {
     return {
@@ -505,6 +521,9 @@ async function selectNote(id: string) {
   try {
     selectedNote.value = await loadNote(id);
     await refreshSelectedNoteChangeState(id);
+    if (isNarrowLayout.value) {
+      sidebarCollapsed.value = true;
+    }
   } catch (reason) {
     error.value = toErrorMessage(reason);
   }
@@ -1310,6 +1329,14 @@ watch(autoCommitEnabled, (enabled) => {
 });
 
 watch(
+  () => isNarrowLayout.value,
+  (narrow) => {
+    mobileTopBarExpanded.value = !narrow;
+  },
+  { immediate: true },
+);
+
+watch(
   () => [syncStatus.value?.autoSyncEnabled, syncStatus.value?.autoSyncIntervalSec],
   ([enabled, intervalSec]) => {
     clearAutoSyncTimer();
@@ -1364,7 +1391,7 @@ onMounted(() => {
 function openNoteFromSearch(noteId: string) {
   void selectNote(noteId);
   activeView.value = "notes";
-  sidebarCollapsed.value = false;
+  sidebarCollapsed.value = isNarrowLayout.value;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -1436,6 +1463,10 @@ function syncSidebarConstraints() {
   }
 
   workspaceWidth.value = notesWorkspaceRef.value.getBoundingClientRect().width;
+  isNarrowLayout.value = workspaceWidth.value <= 900 || window.innerWidth <= 900;
+  if (isNarrowLayout.value) {
+    return;
+  }
   sidebarWidth.value = clampSidebarWidth(sidebarWidth.value);
 }
 
@@ -1461,7 +1492,7 @@ function onSidebarResizeEnd() {
 }
 
 function startSidebarResize(event: MouseEvent) {
-  if (sidebarCollapsed.value) {
+  if (sidebarCollapsed.value || isNarrowLayout.value) {
     return;
   }
 
@@ -1476,7 +1507,7 @@ function startSidebarResize(event: MouseEvent) {
 <template>
   <v-app>
     <v-main class="app-shell">
-      <div class="app-layout">
+      <div class="app-layout" :class="{ 'narrow-shell': isNarrowLayout }">
         <aside class="activity-rail">
           <button type="button" class="rail-btn" :class="{ active: activeView === 'notes' }" @click="onNotesRailClick"
             title="Notes">
@@ -1515,48 +1546,85 @@ function startSidebarResize(event: MouseEvent) {
 
         <div class="page-wrap">
 
-          <header v-if="activeView === 'notes'" class="page-note-banner">
-            <div class="page-note-banner-spacer" aria-hidden="true" />
-            <h2 class="page-note-banner-title" :title="selectedNoteTitle">{{ selectedNoteTitle }}</h2>
-            <div class="page-note-banner-actions">
-              <v-tooltip text="Commit message (Enter to commit)" location="bottom">
-                <template #activator="{ props }">
-                  <v-text-field v-bind="props" v-model="manualCommitMessage" class="commit-message-input"
-                    density="compact" variant="outlined" hide-details placeholder="Update note"
-                    :disabled="!selectedNoteId || manualCommitBusy" @keydown.enter.prevent="handleManualCommit" />
-                </template>
-              </v-tooltip>
-              <v-tooltip text="Commit (Cmd/Ctrl+S)" location="bottom">
-                <template #activator="{ props }">
-                  <v-btn v-bind="props" size="small" variant="flat" icon="mdi-source-commit"
+          <header v-if="activeView === 'notes'" class="page-note-banner" :class="{ compact: isNarrowLayout }">
+            <template v-if="!isNarrowLayout">
+              <div class="page-note-banner-spacer" aria-hidden="true" />
+              <h2 class="page-note-banner-title" :title="selectedNoteTitle">{{ selectedNoteTitle }}</h2>
+              <div class="page-note-banner-actions">
+                <v-tooltip text="Commit message (Enter to commit)" location="bottom">
+                  <template #activator="{ props }">
+                    <v-text-field v-bind="props" v-model="manualCommitMessage" class="commit-message-input"
+                      density="compact" variant="outlined" hide-details placeholder="Update note"
+                      :disabled="!selectedNoteId || manualCommitBusy" @keydown.enter.prevent="handleManualCommit" />
+                  </template>
+                </v-tooltip>
+                <v-tooltip text="Commit (Cmd/Ctrl+S)" location="bottom">
+                  <template #activator="{ props }">
+                    <v-btn v-bind="props" size="small" variant="flat" icon="mdi-source-commit"
+                      :color="canCommitCurrentNote ? 'primary' : undefined" :disabled="!canCommitCurrentNote"
+                      :loading="manualCommitBusy" title="Commit (Cmd/Ctrl+S)" @click="handleManualCommit" />
+                  </template>
+                </v-tooltip>
+                <v-tooltip text="Show info (Esc to blur focus)" location="bottom">
+                  <template #activator="{ props }">
+                    <v-btn v-bind="props" size="small" variant="text" icon="mdi-information-outline"
+                      :disabled="!selectedNote" @click="showSelectedNoteInfo" />
+                  </template>
+                </v-tooltip>
+                <v-menu location="bottom end">
+                  <template #activator="{ props: menuProps }">
+                    <v-tooltip text="Export" location="bottom">
+                      <template #activator="{ props: tooltipProps }">
+                        <v-btn v-bind="{ ...menuProps, ...tooltipProps }" size="small" color="primary" variant="flat"
+                          icon="mdi-export" :disabled="!selectedNoteId || exportingTypst || exportingPdf"
+                          :loading="exportingTypst || exportingPdf" />
+                      </template>
+                    </v-tooltip>
+                  </template>
+                  <v-list density="compact">
+                    <v-list-item prepend-icon="mdi-code-braces" title="Export Typst"
+                      @click="handleExportSelectedNoteTypst" />
+                    <v-list-item prepend-icon="mdi-file-pdf-box" title="Export PDF"
+                      @click="handleExportSelectedNotePdf" />
+                  </v-list>
+                </v-menu>
+              </div>
+            </template>
+            <template v-else>
+              <div class="mobile-banner-row">
+                <v-btn size="x-small" variant="text" icon="mdi-file-tree-outline"
+                  :title="sidebarCollapsed ? 'Show note list' : 'Hide note list'" @click="sidebarCollapsed = !sidebarCollapsed" />
+                <h2 class="page-note-banner-title mobile-banner-title" :title="selectedNoteTitle">{{ selectedNoteTitle }}</h2>
+                <v-btn size="x-small" variant="text" :icon="mobileTopBarExpanded ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                  :title="mobileTopBarExpanded ? 'Fold top bar' : 'Expand top bar'"
+                  @click="mobileTopBarExpanded = !mobileTopBarExpanded" />
+              </div>
+              <div v-if="mobileTopBarExpanded" class="page-note-banner-foldout">
+                <v-text-field v-model="manualCommitMessage" class="commit-message-input compact-input" density="compact"
+                  variant="outlined" hide-details placeholder="Update note" :disabled="!selectedNoteId || manualCommitBusy"
+                  @keydown.enter.prevent="handleManualCommit" />
+                <div class="page-note-banner-actions compact-actions">
+                  <v-btn size="small" variant="flat" icon="mdi-source-commit"
                     :color="canCommitCurrentNote ? 'primary' : undefined" :disabled="!canCommitCurrentNote"
                     :loading="manualCommitBusy" title="Commit (Cmd/Ctrl+S)" @click="handleManualCommit" />
-                </template>
-              </v-tooltip>
-              <v-tooltip text="Show info (Esc to blur focus)" location="bottom">
-                <template #activator="{ props }">
-                  <v-btn v-bind="props" size="small" variant="text" icon="mdi-information-outline"
-                    :disabled="!selectedNote" @click="showSelectedNoteInfo" />
-                </template>
-              </v-tooltip>
-              <v-menu location="bottom end">
-                <template #activator="{ props: menuProps }">
-                  <v-tooltip text="Export" location="bottom">
-                    <template #activator="{ props: tooltipProps }">
-                      <v-btn v-bind="{ ...menuProps, ...tooltipProps }" size="small" color="primary" variant="flat"
-                        icon="mdi-export" :disabled="!selectedNoteId || exportingTypst || exportingPdf"
-                        :loading="exportingTypst || exportingPdf" />
+                  <v-btn size="small" variant="text" icon="mdi-information-outline" :disabled="!selectedNote"
+                    title="Show info" @click="showSelectedNoteInfo" />
+                  <v-menu location="bottom end">
+                    <template #activator="{ props: menuProps }">
+                      <v-btn v-bind="menuProps" size="small" color="primary" variant="flat" icon="mdi-export"
+                        :disabled="!selectedNoteId || exportingTypst || exportingPdf"
+                        :loading="exportingTypst || exportingPdf" title="Export" />
                     </template>
-                  </v-tooltip>
-                </template>
-                <v-list density="compact">
-                  <v-list-item prepend-icon="mdi-code-braces" title="Export Typst"
-                    @click="handleExportSelectedNoteTypst" />
-                  <v-list-item prepend-icon="mdi-file-pdf-box" title="Export PDF"
-                    @click="handleExportSelectedNotePdf" />
-                </v-list>
-              </v-menu>
-            </div>
+                    <v-list density="compact">
+                      <v-list-item prepend-icon="mdi-code-braces" title="Export Typst"
+                        @click="handleExportSelectedNoteTypst" />
+                      <v-list-item prepend-icon="mdi-file-pdf-box" title="Export PDF"
+                        @click="handleExportSelectedNotePdf" />
+                    </v-list>
+                  </v-menu>
+                </div>
+              </div>
+            </template>
           </header>
 
           <div class="notice-stack" aria-live="polite">
@@ -1571,7 +1639,7 @@ function startSidebarResize(event: MouseEvent) {
           </div>
 
           <section v-if="activeView === 'notes'" ref="notesWorkspaceRef" class="workspace-grid"
-            :class="{ collapsed: sidebarCollapsed }" :style="notesWorkspaceStyle">
+            :class="{ collapsed: sidebarCollapsed, narrow: isNarrowLayout }" :style="notesWorkspaceStyle">
             <aside class="sidebar-column">
               <NoteTreePanel :folders="foldersForTree" :notes="notesForTree" :selected-note-id="selectedNoteId"
                 :loading="loadingTree || busy" :show-empty-folders="showEmptyFolders" @select-note="selectNote"
@@ -1581,7 +1649,8 @@ function startSidebarResize(event: MouseEvent) {
                 @delete-tree-selection="handleDeleteTreeSelection" @move-note-to-folder="handleMoveNoteToFolder" />
             </aside>
 
-            <div class="sidebar-resizer" :class="{ dragging: sidebarResizing }" @mousedown="startSidebarResize" />
+            <div v-if="!isNarrowLayout" class="sidebar-resizer" :class="{ dragging: sidebarResizing }"
+              @mousedown="startSidebarResize" />
 
             <article class="editor-column">
               <NoteEditorPanel :note="selectedNote" :tag-options="tagOptions" @change="handleSave" />
@@ -1763,6 +1832,7 @@ function startSidebarResize(event: MouseEvent) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
   animation: rise-in 0.38s ease-out;
 }
 
@@ -1827,6 +1897,35 @@ function startSidebarResize(event: MouseEvent) {
   flex-shrink: 0;
 }
 
+.mobile-banner-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.mobile-banner-title {
+  text-align: center;
+  font-size: 0.88rem;
+}
+
+.page-note-banner-foldout {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
+}
+
+.compact-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.compact-input {
+  width: 100%;
+}
+
 .commit-message-input {
   width: clamp(180px, 26vw, 320px);
   min-width: 0;
@@ -1844,6 +1943,27 @@ function startSidebarResize(event: MouseEvent) {
 
 .workspace-grid.collapsed {
   grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.workspace-grid.narrow {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(180px, 40vh) minmax(0, 1fr);
+}
+
+.workspace-grid.narrow .sidebar-column {
+  border-right: 0;
+  border-bottom: 1px solid var(--fox-border);
+  padding: 0.25rem 0.35rem;
+}
+
+.workspace-grid.narrow .editor-column {
+  padding: 0.5rem 0.7rem 0.65rem;
+}
+
+.workspace-grid.narrow.collapsed .sidebar-column {
+  border-bottom: 0;
+  padding: 0;
+  opacity: 0;
 }
 
 .settings-view {
@@ -1937,20 +2057,44 @@ function startSidebarResize(event: MouseEvent) {
 
 @media (max-width: 760px) {
   .app-layout {
-    grid-template-columns: 62px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .activity-rail {
-    flex-direction: column;
-    border-right: 1px solid var(--fox-border);
-    border-bottom: 0;
-    padding: 0.4rem 0.2rem;
+    grid-row: 2;
+    flex-direction: row;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 0.25rem;
+    border-right: 0;
+    border-top: 1px solid var(--fox-border);
+    padding: 0.32rem 0.3rem;
+    overflow-x: auto;
   }
 
   .rail-btn {
-    min-height: 50px;
-    font-size: 0.66rem;
-    padding: 0.24rem 0.12rem;
+    min-height: 46px;
+    min-width: 60px;
+    font-size: 0.62rem;
+    padding: 0.2rem 0.12rem;
+    flex: 1 1 0;
+  }
+
+  .rail-bottom-actions {
+    margin-top: 0;
+    flex-direction: row;
+    border-top: 0;
+    border-left: 1px solid color-mix(in srgb, var(--fox-border) 80%, transparent 20%);
+    padding-top: 0;
+    padding-left: 0.3rem;
+    gap: 0.2rem;
+    flex-shrink: 0;
+  }
+
+  .rail-utility {
+    min-height: 46px;
+    min-width: 58px;
   }
 
   .sidebar-column {
@@ -1962,28 +2106,35 @@ function startSidebarResize(event: MouseEvent) {
   }
 
   .notice-stack {
-    top: 3.8rem;
-    right: 0.45rem;
+    position: static;
+    top: auto;
+    right: auto;
+    align-items: stretch;
+    padding: 0 0.5rem 0.2rem;
   }
 
   .notice-row {
-    max-width: calc(100vw - 4.8rem);
+    width: 100%;
+    max-width: 100%;
   }
 
   .page-note-banner {
-    flex-wrap: wrap;
-    padding: 0.45rem 0.5rem;
+    padding: 0.33rem 0.42rem;
+    margin: 0;
   }
 
   .page-note-banner-title {
     max-width: 100%;
-    flex-basis: 100%;
     text-align: left;
   }
 
   .page-note-banner-actions {
     flex-wrap: wrap;
     width: 100%;
+  }
+
+  .page-wrap {
+    height: 100%;
   }
 
   .commit-message-input {
