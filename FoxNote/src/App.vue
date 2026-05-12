@@ -27,6 +27,8 @@ import {
   listTags,
   loadNote,
   listPlugins,
+  moveNoteToFolder,
+  renameNote,
   renameNoteFolder,
   resolveSyncConflict,
   removePlugin,
@@ -272,7 +274,7 @@ function buildPdfExportDocument(note: NoteRecord, bodyBlocks: string[]): string 
     '#import "@preview/note-me:0.6.0": *',
     '#import "@preview/mitex:0.2.7": *',
     '#set page(margin: (x: 22mm, y: 18mm))',
-    '#set text(font: ("Source Han Serif SC", "New Computer Modern"), size: 11pt, fill: rgb("#111827"))',
+    '#set text(font: ("Source Han Serif SC", "New Computer Modern"), size: 10pt, fill: rgb("#111827"))',
     '#show image: set block(breakable: false)',
     `#set document(title: "${escapedTitle}", author: "${escapedAuthor}")`,
     `#let foxnote-meta(title, date, tags) = [`,
@@ -761,6 +763,34 @@ function handleRenameNoteInTree(noteId: string, noteTitle: string) {
   void renameNoteById(noteId, noteTitle);
 }
 
+async function handleMoveNoteToFolder(noteId: string, folderPath: string) {
+  const targetFolder = folderPath.trim();
+  if (!noteId) {
+    return;
+  }
+
+  const source = tree.value.notes.find((entry) => entry.id === noteId);
+  if (!source || source.folder === targetFolder) {
+    return;
+  }
+
+  busy.value = true;
+  error.value = "";
+
+  try {
+    const moved = await moveNoteToFolder(noteId, targetFolder);
+    const targetLabel = moved.folder || "root";
+    notice.value = `Moved '${moved.document.title}' to '${targetLabel}'.`;
+    await refreshTree();
+    await refreshTags();
+    await selectNote(moved.id);
+  } catch (reason) {
+    error.value = toErrorMessage(reason);
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function renameFolderByPath(path: string, rawName: string) {
   const nextName = rawName.trim();
   if (!path) {
@@ -818,29 +848,11 @@ async function renameNoteById(noteId: string, rawTitle: string) {
   error.value = "";
 
   try {
-    const currentRecord = selectedNoteId.value === noteId
-      ? selectedNote.value
-      : await loadNote(noteId);
+    const renamed = await renameNote(noteId, nextTitle);
 
-    if (!currentRecord) {
-      throw new Error("Note not found.");
-    }
-
-    const nextDocument: NoteDocument = {
-      ...currentRecord.document,
-      title: nextTitle,
-    };
-
-    await saveNote(noteId, nextDocument);
-
-    if (selectedNoteId.value === noteId && selectedNote.value) {
-      selectedNote.value = {
-        ...selectedNote.value,
-        document: {
-          ...selectedNote.value.document,
-          title: nextTitle,
-        },
-      };
+    if (selectedNoteId.value === noteId) {
+      selectedNoteId.value = renamed.id;
+      selectedNote.value = renamed;
     }
 
     notice.value = `Renamed note to '${nextTitle}'.`;
@@ -1566,7 +1578,7 @@ function startSidebarResize(event: MouseEvent) {
                 @create-note-in-folder="handleCreateNoteInFolder" @create-folder-in-folder="handleCreateFolderInFolder"
                 @rename-folder-in-tree="handleRenameFolderInTree" @delete-folder-in-tree="handleDeleteFolderInTree"
                 @rename-note-in-tree="handleRenameNoteInTree" @delete-note-in-tree="handleDeleteFromTree"
-                @delete-tree-selection="handleDeleteTreeSelection" />
+                @delete-tree-selection="handleDeleteTreeSelection" @move-note-to-folder="handleMoveNoteToFolder" />
             </aside>
 
             <div class="sidebar-resizer" :class="{ dragging: sidebarResizing }" @mousedown="startSidebarResize" />
@@ -1854,7 +1866,7 @@ function startSidebarResize(event: MouseEvent) {
   min-width: 0;
   border-right: 1px solid var(--fox-border);
   padding: 0.2rem 0.25rem 0.45rem 0.4rem;
-  overflow: hidden;
+  overflow: auto;
   opacity: 1;
   transition: opacity 140ms ease;
 }

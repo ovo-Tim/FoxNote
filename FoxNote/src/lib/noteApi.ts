@@ -57,8 +57,16 @@ export async function saveNote(
   return invoke<NoteRecord>("save_note", { id, document });
 }
 
+export async function renameNote(id: string, title: string): Promise<NoteRecord> {
+  return invoke<NoteRecord>("rename_note", { id, title });
+}
+
 export async function deleteNote(id: string): Promise<void> {
   return invoke<void>("delete_note", { id });
+}
+
+export async function moveNoteToFolder(id: string, folder: string): Promise<NoteRecord> {
+  return invoke<NoteRecord>("move_note_to_folder", { id, folder });
 }
 
 export async function exportNoteTypst(

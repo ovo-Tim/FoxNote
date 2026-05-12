@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { renderTypstToSvgWithTheme } from "../../lib/typstPreview";
 
 const props = defineProps<{
   modelValue: string;
@@ -19,6 +20,14 @@ const emit = defineEmits<{
 }>();
 
 const localSummary = ref(props.summary || "");
+const previewSvg = ref("");
+const previewError = ref("");
+const prefersDark = ref(false);
+const previewHostRef = ref<HTMLElement | null>(null);
+const previewPageWidth = ref<string | undefined>(undefined);
+let renderTicket = 0;
+let mediaQuery: MediaQueryList | null = null;
+let previewResizeObserver: ResizeObserver | null = null;
 
 const headingTag = computed(() => {
   const level = Math.min(6, Math.max(1, Number(props.level) || 1));
@@ -34,6 +43,79 @@ watch(
 
 const displayTitle = computed(() => props.modelValue.trim() || "Untitled section");
 
+const titlePreviewSource = computed(() => {
+  const level = Math.min(6, Math.max(1, Number(props.level) || 1));
+  return `${"=".repeat(level)} ${displayTitle.value}`;
+});
+
+function stripSvgScripts(svg: string): string {
+  return svg.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+}
+
+function syncDarkMode() {
+  if (!mediaQuery) {
+    return;
+  }
+  prefersDark.value = mediaQuery.matches;
+}
+
+function syncPreviewWidth() {
+  const host = previewHostRef.value;
+  if (!host) {
+    return;
+  }
+
+  const widthPx = Math.max(0, host.clientWidth - 8);
+  if (widthPx <= 0) {
+    return;
+  }
+
+  const widthPt = Math.max(120, Math.round(widthPx * 0.95));
+  previewPageWidth.value = `${widthPt}pt`;
+}
+
+function bindPreviewResizeObserver() {
+  previewResizeObserver?.disconnect();
+  previewResizeObserver = null;
+
+  if (typeof ResizeObserver === "undefined" || !previewHostRef.value) {
+    return;
+  }
+
+  previewResizeObserver = new ResizeObserver(() => {
+    syncPreviewWidth();
+    void renderPreview();
+  });
+  previewResizeObserver.observe(previewHostRef.value);
+}
+
+async function renderPreview() {
+  if (props.editing || (props.folded && props.summary.trim())) {
+    previewSvg.value = "";
+    previewError.value = "";
+    return;
+  }
+
+  const ticket = ++renderTicket;
+  try {
+    const svg = await renderTypstToSvgWithTheme(titlePreviewSource.value, {
+      darkMode: prefersDark.value,
+      pageWidth: previewPageWidth.value,
+    });
+    if (ticket !== renderTicket) {
+      return;
+    }
+    previewSvg.value = stripSvgScripts(svg);
+    previewError.value = "";
+  } catch (reason) {
+    if (ticket !== renderTicket) {
+      return;
+    }
+    previewSvg.value = "";
+    previewError.value = reason instanceof Error ? reason.message : String(reason);
+  }
+}
+
 function onSummaryBlur() {
   emit("updateSummary", localSummary.value);
 }
@@ -46,6 +128,33 @@ function onLevelInput(rawValue: string | number) {
   const next = Math.min(6, Math.max(1, Math.round(parsed)));
   emit("updateLevel", next);
 }
+
+onMounted(() => {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return;
+  }
+
+  mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  syncDarkMode();
+  mediaQuery.addEventListener("change", syncDarkMode);
+  syncPreviewWidth();
+  bindPreviewResizeObserver();
+  void renderPreview();
+});
+
+onBeforeUnmount(() => {
+  mediaQuery?.removeEventListener("change", syncDarkMode);
+  mediaQuery = null;
+  previewResizeObserver?.disconnect();
+  previewResizeObserver = null;
+});
+
+watch(
+  () => [props.modelValue, props.level, props.editing, props.folded, props.summary, prefersDark.value, previewPageWidth.value],
+  () => {
+    void renderPreview();
+  },
+);
 </script>
 
 <template>
@@ -56,7 +165,12 @@ function onLevelInput(rawValue: string | number) {
         <v-icon :icon="folded ? 'mdi-chevron-right' : 'mdi-chevron-down'" size="16" />
       </button>
 
-      <component :is="headingTag" class="title-heading">{{ displayTitle }}</component>
+      <component v-if="editing" :is="headingTag" class="title-heading">{{ displayTitle }}</component>
+
+      <div v-else ref="previewHostRef" class="title-preview-wrap">
+        <div v-if="previewSvg" class="title-preview typst-content" v-html="previewSvg" />
+        <component v-else :is="headingTag" class="title-heading title-heading-fallback">{{ displayTitle }}</component>
+      </div>
 
       <div class="title-level-chip" title="Title level">H{{ Math.min(6, Math.max(1, Number(level) || 1)) }}</div>
     </div>
@@ -77,6 +191,7 @@ function onLevelInput(rawValue: string | number) {
     </template>
 
     <p v-else-if="folded && summary.trim()" class="title-summary">{{ summary }}</p>
+    <p v-else-if="previewError" class="title-preview-error">{{ previewError }}</p>
   </section>
 </template>
 
@@ -125,6 +240,25 @@ function onLevelInput(rawValue: string | number) {
   text-overflow: ellipsis;
 }
 
+.title-heading-fallback {
+  width: 100%;
+}
+
+.title-preview-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.title-preview {
+  width: 100%;
+}
+
+.title-preview :deep(svg) {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .title-level-chip {
   border: 1px solid color-mix(in srgb, var(--fox-border) 78%, transparent 22%);
   border-radius: 999px;
@@ -148,6 +282,14 @@ function onLevelInput(rawValue: string | number) {
   margin: 0.42rem 0 0;
   color: var(--fox-text-muted);
   font-size: 0.9rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.title-preview-error {
+  margin: 0.42rem 0 0;
+  color: #fda4af;
+  font-size: 0.82rem;
   white-space: pre-wrap;
   word-break: break-word;
 }

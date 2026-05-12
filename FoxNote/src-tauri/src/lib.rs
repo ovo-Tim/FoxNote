@@ -238,6 +238,39 @@ fn save_note(
 }
 
 #[tauri::command]
+fn rename_note(
+    state: tauri::State<AppState>,
+    id: String,
+    title: String,
+) -> Result<NoteRecord, String> {
+    let source_id = id.trim().to_string();
+    let record = state
+        .note_service
+        .rename_note(&source_id, &title)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .tag_service
+        .remove_note(&source_id)
+        .map_err(|error| error.to_string())?;
+    state
+        .tag_service
+        .upsert_note_tags(&record.id, &record.document.tags)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .search_service
+        .remove_note(&source_id)
+        .map_err(|error| error.to_string())?;
+    state
+        .search_service
+        .upsert_note_record(&record)
+        .map_err(|error| error.to_string())?;
+
+    Ok(record)
+}
+
+#[tauri::command]
 fn delete_note(state: tauri::State<AppState>, id: String) -> Result<(), String> {
     state
         .note_service
@@ -253,6 +286,39 @@ fn delete_note(state: tauri::State<AppState>, id: String) -> Result<(), String> 
         .search_service
         .remove_note(&id)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn move_note_to_folder(
+    state: tauri::State<AppState>,
+    id: String,
+    folder: String,
+) -> Result<NoteRecord, String> {
+    let source_id = id.trim().to_string();
+    let record = state
+        .note_service
+        .move_note_to_folder(&source_id, &folder)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .tag_service
+        .remove_note(&source_id)
+        .map_err(|error| error.to_string())?;
+    state
+        .tag_service
+        .upsert_note_tags(&record.id, &record.document.tags)
+        .map_err(|error| error.to_string())?;
+
+    state
+        .search_service
+        .remove_note(&source_id)
+        .map_err(|error| error.to_string())?;
+    state
+        .search_service
+        .upsert_note_record(&record)
+        .map_err(|error| error.to_string())?;
+
+    Ok(record)
 }
 
 #[tauri::command]
@@ -684,7 +750,9 @@ pub fn run() {
             create_note,
             load_note,
             save_note,
+            rename_note,
             delete_note,
+            move_note_to_folder,
             search_notes,
             export_note_typst,
             write_export_file,

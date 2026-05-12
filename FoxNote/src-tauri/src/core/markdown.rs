@@ -26,6 +26,67 @@ fn block_latex_to_typst(latex: &str) -> String {
     format!("#mitex({})", typst_raw_literal(trimmed))
 }
 
+fn escape_typst_string(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn convert_inline_links(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut result = String::new();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        if chars[index] == '[' && (index == 0 || chars[index - 1] != '\\') {
+            let mut label_end = index + 1;
+            while label_end < chars.len() {
+                if chars[label_end] == ']' && chars[label_end - 1] != '\\' {
+                    break;
+                }
+                label_end += 1;
+            }
+
+            if label_end + 1 < chars.len() && chars[label_end + 1] == '(' {
+                let mut url_end = label_end + 2;
+                while url_end < chars.len() {
+                    if chars[url_end] == ')' && chars[url_end - 1] != '\\' {
+                        break;
+                    }
+                    url_end += 1;
+                }
+
+                if url_end < chars.len() {
+                    let label: String = chars[index + 1..label_end].iter().collect();
+                    let url: String = chars[label_end + 2..url_end].iter().collect();
+                    let trimmed_url = url.trim();
+
+                    if !trimmed_url.is_empty() {
+                        result.push_str(&format!(
+                            "#link(\"{}\")[{}]",
+                            escape_typst_string(trimmed_url),
+                            convert_inline_links(&convert_inline_latex_math(
+                                &normalize_spaced_dollar_delimiters(label.trim())
+                            ))
+                        ));
+                        index = url_end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        result.push(chars[index]);
+        index += 1;
+    }
+
+    result
+}
+
+fn convert_inline_markdown(input: &str) -> String {
+    convert_inline_links(&convert_inline_latex_math(
+        &normalize_spaced_dollar_delimiters(input),
+    ))
+}
+
 fn markdown_image_to_typst(line: &str) -> Option<String> {
     let trimmed = line.trim();
     if !trimmed.starts_with("![") {
@@ -51,7 +112,7 @@ fn markdown_image_to_typst(line: &str) -> Option<String> {
     Some(format!(
         "#figure(image(\"{}\", width: 100%), caption: [{}])",
         path,
-        convert_inline_latex_math(alt.trim())
+        convert_inline_markdown(alt.trim())
     ))
 }
 
@@ -143,11 +204,12 @@ fn markdown_table_to_typst(lines: &[&str], start: usize) -> Option<(String, usiz
     for row in all_rows {
         for index in 0..column_count {
             let raw = row.get(index).map(String::as_str).unwrap_or("");
-            let converted = convert_inline_latex_math(&normalize_spaced_dollar_delimiters(raw));
+            let converted = convert_inline_markdown(raw);
             let cell_content = converted.trim();
             let rendered = if cell_content.contains("#mi(")
                 || cell_content.contains("#mitex(")
                 || cell_content.contains("#math")
+                || cell_content.contains("#link(")
             {
                 cell_content.to_string()
             } else {
@@ -265,8 +327,7 @@ pub fn convert_markdown_to_typst(markdown: &str) -> String {
             let level = trimmed.chars().take_while(|ch| *ch == '#').count();
             let title = trimmed[level..].trim();
             if (1..=6).contains(&level) && !title.is_empty() {
-                let heading_content =
-                    convert_inline_latex_math(&normalize_spaced_dollar_delimiters(title));
+                let heading_content = convert_inline_markdown(title);
                 output.push(format!("{} {}", "=".repeat(level), heading_content));
                 index += 1;
                 continue;
@@ -284,10 +345,7 @@ pub fn convert_markdown_to_typst(markdown: &str) -> String {
             .or_else(|| trimmed.strip_prefix("* "))
             .or_else(|| trimmed.strip_prefix("+ "))
         {
-            output.push(format!(
-                "- {}",
-                convert_inline_latex_math(&normalize_spaced_dollar_delimiters(rest.trim()))
-            ));
+            output.push(format!("- {}", convert_inline_markdown(rest.trim())));
             index += 1;
             continue;
         }
@@ -299,27 +357,19 @@ pub fn convert_markdown_to_typst(markdown: &str) -> String {
         if let Some((marker_index, marker)) = ordered_start {
             if (marker == '.' || marker == ')') && trimmed[marker_index + 1..].starts_with(' ') {
                 let item = trimmed[marker_index + 2..].trim();
-                output.push(format!(
-                    "+ {}",
-                    convert_inline_latex_math(&normalize_spaced_dollar_delimiters(item))
-                ));
+                output.push(format!("+ {}", convert_inline_markdown(item)));
                 index += 1;
                 continue;
             }
         }
 
         if let Some(rest) = trimmed.strip_prefix('>') {
-            output.push(format!(
-                "#quote[{}]",
-                convert_inline_latex_math(&normalize_spaced_dollar_delimiters(rest.trim()))
-            ));
+            output.push(format!("#quote[{}]", convert_inline_markdown(rest.trim())));
             index += 1;
             continue;
         }
 
-        output.push(convert_inline_latex_math(
-            &normalize_spaced_dollar_delimiters(line),
-        ));
+        output.push(convert_inline_markdown(line));
         index += 1;
     }
 

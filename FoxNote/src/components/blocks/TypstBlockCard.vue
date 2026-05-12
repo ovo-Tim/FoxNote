@@ -183,7 +183,7 @@ function syncPreviewWidth() {
     return;
   }
 
-  const widthPt = Math.max(120, Math.round(widthPx * 0.75));
+  const widthPt = Math.max(120, Math.round(widthPx * 0.95));
   previewPageWidth.value = `${widthPt}pt`;
 }
 

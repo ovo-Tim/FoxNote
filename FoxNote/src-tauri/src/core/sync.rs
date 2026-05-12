@@ -302,6 +302,25 @@ impl SyncService {
     }
 
     pub fn pull_then_push(&self) -> Result<SyncStatus, SyncError> {
+        if !self.is_repo_initialized() {
+            return Ok(self.with_message(SyncPhase::NeedsSetup, "Initialize repository first")?);
+        }
+
+        if !self.collect_conflicts()?.is_empty() {
+            return Ok(
+                self.with_message(SyncPhase::Conflict, "Resolve sync conflicts before upload")?
+            );
+        }
+
+        self.run_git(&["add", "-A"])?;
+        if self.has_staged_changes()? {
+            let message = format!(
+                "FoxNote upload {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+            self.run_git(&["commit", "-m", &message])?;
+        }
+
         let pull_status = self.pull_only()?;
         if matches!(
             pull_status.phase,

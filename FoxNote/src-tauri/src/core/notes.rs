@@ -23,6 +23,8 @@ pub enum NoteError {
     InvalidPath(String),
     #[error("note not found: {0}")]
     NoteNotFound(String),
+    #[error("note already exists: {0}")]
+    NoteAlreadyExists(String),
     #[error("folder not found: {0}")]
     FolderNotFound(String),
     #[error("folder already exists: {0}")]
@@ -335,6 +337,49 @@ impl NoteService {
         })
     }
 
+    pub fn rename_note(&self, note_id: &str, title: &str) -> Result<NoteRecord, NoteError> {
+        let note_path = normalize_relative_path(note_id)?;
+        if note_path.as_os_str().is_empty() {
+            return Err(NoteError::InvalidPath(note_id.to_string()));
+        }
+
+        let source_absolute = self.resolve_relative_path(&note_path)?;
+        if !source_absolute.join(NOTE_FILE_NAME).is_file() {
+            return Err(NoteError::NoteNotFound(path_to_string(&note_path)));
+        }
+
+        let clean_title = title.trim();
+        if clean_title.is_empty() {
+            return Err(NoteError::EmptyTitle);
+        }
+
+        let mut document = self.read_note_record(&note_path)?.document;
+        document.title = clean_title.to_string();
+        let document = document.normalize()?;
+
+        let parent = note_path.parent().unwrap_or(Path::new(""));
+        let parent_absolute = self.resolve_relative_path(parent)?;
+        let next_folder_name = self.next_note_folder_name(clean_title, &parent_absolute);
+        let next_path = if parent.as_os_str().is_empty() {
+            PathBuf::from(&next_folder_name)
+        } else {
+            parent.join(&next_folder_name)
+        };
+
+        if next_path != note_path {
+            let destination_absolute = self.resolve_relative_path(&next_path)?;
+            if destination_absolute.exists() {
+                return Err(NoteError::NoteAlreadyExists(path_to_string(&next_path)));
+            }
+            fs::rename(&source_absolute, &destination_absolute)?;
+            self.write_note_document(&destination_absolute, &document)?;
+        } else {
+            self.write_note_document(&source_absolute, &document)?;
+        }
+
+        self.read_note_record(&next_path)
+    }
+
     pub fn delete_note(&self, note_id: &str) -> Result<(), NoteError> {
         let note_path = normalize_relative_path(note_id)?;
         if note_path.as_os_str().is_empty() {
@@ -348,6 +393,55 @@ impl NoteService {
 
         fs::remove_dir_all(note_absolute)?;
         Ok(())
+    }
+
+    pub fn move_note_to_folder(
+        &self,
+        note_id: &str,
+        folder: &str,
+    ) -> Result<NoteRecord, NoteError> {
+        let note_path = normalize_relative_path(note_id)?;
+        if note_path.as_os_str().is_empty() {
+            return Err(NoteError::InvalidPath(note_id.to_string()));
+        }
+
+        let source_absolute = self.resolve_relative_path(&note_path)?;
+        if !source_absolute.join(NOTE_FILE_NAME).is_file() {
+            return Err(NoteError::NoteNotFound(path_to_string(&note_path)));
+        }
+
+        let folder_path = normalize_relative_path(folder)?;
+        let folder_absolute = self.resolve_relative_path(&folder_path)?;
+        if !folder_path.as_os_str().is_empty() && !folder_absolute.is_dir() {
+            return Err(NoteError::FolderNotFound(path_to_string(&folder_path)));
+        }
+        fs::create_dir_all(&folder_absolute)?;
+
+        let note_name = note_path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| NoteError::InvalidPath(note_id.to_string()))?
+            .to_string();
+
+        let destination_path = if folder_path.as_os_str().is_empty() {
+            PathBuf::from(&note_name)
+        } else {
+            folder_path.join(&note_name)
+        };
+
+        if destination_path == note_path {
+            return self.read_note_record(&note_path);
+        }
+
+        let destination_absolute = self.resolve_relative_path(&destination_path)?;
+        if destination_absolute.exists() {
+            return Err(NoteError::NoteAlreadyExists(path_to_string(
+                &destination_path,
+            )));
+        }
+
+        fs::rename(source_absolute, destination_absolute)?;
+        self.read_note_record(&destination_path)
     }
 
     pub fn delete_folder(&self, path: &str) -> Result<(), NoteError> {

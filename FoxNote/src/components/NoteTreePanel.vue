@@ -40,6 +40,7 @@ const emit = defineEmits<{
     folderPaths: string[];
     folderNames: string[];
   }];
+  moveNoteToFolder: [noteId: string, folderPath: string];
 }>();
 
 const expanded = ref<Record<string, boolean>>({});
@@ -78,6 +79,9 @@ const renamingFolderPath = ref("");
 const renamingFolderName = ref("");
 const renamingNoteId = ref("");
 const renamingNoteTitle = ref("");
+const draggingNoteId = ref("");
+const dropFolderPath = ref("");
+const rootDropActive = ref(false);
 
 function debugLog(event: string, details?: Record<string, unknown>) {
   if (!DEBUG_TREE_MARQUEE) {
@@ -352,6 +356,27 @@ function isRowSelected(row: TreeRow): boolean {
   return selectedRowSet.value.has(rowKey(row));
 }
 
+function canDragRow(row: TreeRow): boolean {
+  const allowed = row.kind === "note" && selectedRows.value.length === 1 && selectedRows.value[0] === rowKey(row);
+  if (row.kind === "note") {
+    debugLog("canDragRow evaluated", {
+      rowKey: rowKey(row),
+      noteId: row.id,
+      selectedRows: [...selectedRows.value],
+      allowed,
+    });
+  }
+  return allowed;
+}
+
+function isDragSourceNote(row: TreeRow): boolean {
+  return row.kind === "note" && draggingNoteId.value === row.id;
+}
+
+function isDropTargetFolder(row: TreeRow): boolean {
+  return row.kind === "folder" && dropFolderPath.value === row.path;
+}
+
 function clearTreeSelection() {
   selectedRows.value = [];
   marqueeSelectionNoteId.value = "";
@@ -604,6 +629,13 @@ function updateSelectionFromMarquee() {
 }
 
 function onTreeMouseDown(event: MouseEvent) {
+  if (draggingNoteId.value) {
+    debugLog("mousedown ignored while dragging", {
+      draggingNoteId: draggingNoteId.value,
+    });
+    return;
+  }
+
   if (marquee.pending || marquee.active) {
     return;
   }
@@ -617,11 +649,33 @@ function onTreeMouseDown(event: MouseEvent) {
     return;
   }
 
-  if (targetEl.closest("input, textarea, [contenteditable='true'], .v-field, .context-menu")) {
+  if (targetEl.closest("button, input, textarea, [contenteditable='true'], .v-field, .context-menu")) {
     debugInfo.lastEvent = "mousedown-ignored";
     debugInfo.targetTag = targetEl.tagName;
     debugInfo.targetClasses = targetEl.className;
-    debugLog("mousedown ignored by filter", {
+    debugLog("mousedown ignored by interactive filter", {
+      tag: targetEl.tagName,
+      className: targetEl.className,
+    });
+    return;
+  }
+
+  const noSelection = selectedRows.value.length === 0;
+
+  const rowEl = targetEl.closest(".tree-row");
+
+  if (rowEl && !noSelection) {
+    debugLog("mousedown ignored on tree-row", {
+      tag: targetEl.tagName,
+      className: targetEl.className,
+      rowKey: rowEl.getAttribute("data-row-key"),
+      noteId: rowEl.getAttribute("data-note-id"),
+    });
+    return;
+  }
+
+  if (targetEl.closest(".tree-header") && !noSelection) {
+    debugLog("mousedown ignored on tree-header", {
       tag: targetEl.tagName,
       className: targetEl.className,
     });
@@ -654,6 +708,10 @@ function onTreeMouseDown(event: MouseEvent) {
 }
 
 function onWindowMouseMove(event: MouseEvent) {
+  if (draggingNoteId.value) {
+    return;
+  }
+
   if (marquee.pending && !marquee.active) {
     const movedDistance = Math.hypot(event.clientX - marquee.startX, event.clientY - marquee.startY);
     if (movedDistance > 4) {
@@ -680,6 +738,13 @@ function onWindowMouseMove(event: MouseEvent) {
 }
 
 function onWindowMouseUp(event: MouseEvent) {
+  if (draggingNoteId.value) {
+    debugLog("mouseup ignored while dragging", {
+      draggingNoteId: draggingNoteId.value,
+    });
+    return;
+  }
+
   if (marquee.pending && !marquee.active) {
     const movedDistanceWhilePending = Math.hypot(event.clientX - marquee.startX, event.clientY - marquee.startY);
     if (movedDistanceWhilePending > 4) {
@@ -735,6 +800,31 @@ function onWindowMouseUp(event: MouseEvent) {
 }
 
 function onWindowKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    if (renamingFolderPath.value || renamingNoteId.value) {
+      cancelInlineRename();
+      return;
+    }
+
+    const hasTransientTreeState = selectedRows.value.length > 0 || contextMenu.open || rootDropActive.value || !!dropFolderPath.value;
+    if (!hasTransientTreeState) {
+      return;
+    }
+
+    event.preventDefault();
+    clearTreeSelection();
+    closeContextMenu();
+    clearNoteDragState();
+    marquee.pending = false;
+    marquee.active = false;
+    marquee.justFinished = false;
+    setGlobalMarqueeTextSelection(false);
+    debugLog("escape cleared tree selection", {
+      selectedRows: [...selectedRows.value],
+    });
+    return;
+  }
+
   if (event.key !== "F2") {
     return;
   }
@@ -757,6 +847,13 @@ function onWindowKeydown(event: KeyboardEvent) {
 
 function onTreeClickCapture(event: MouseEvent) {
   const targetEl = resolveTargetElement(event.target);
+  if (draggingNoteId.value) {
+    debugLog("click capture ignored while dragging", {
+      draggingNoteId: draggingNoteId.value,
+    });
+    return;
+  }
+
   if (
     (renamingFolderPath.value || renamingNoteId.value) &&
     targetEl &&
@@ -924,6 +1021,239 @@ function createNoteInFolderRow(folderPath: string) {
   emit("createNoteInFolder", folderPath);
 }
 
+function clearNoteDragState() {
+  debugLog("drag clear state", {
+    draggingNoteId: draggingNoteId.value,
+    dropFolderPath: dropFolderPath.value,
+    rootDropActive: rootDropActive.value,
+  });
+  draggingNoteId.value = "";
+  dropFolderPath.value = "";
+  rootDropActive.value = false;
+}
+
+function canDropNoteToFolder(noteId: string, folderPath: string): boolean {
+  if (!noteId) {
+    debugLog("canDropNoteToFolder rejected empty noteId", { folderPath });
+    return false;
+  }
+  const note = props.notes.find((entry) => entry.id === noteId);
+  const allowed = !!note && note.folder !== folderPath;
+  debugLog("canDropNoteToFolder evaluated", {
+    noteId,
+    folderPath,
+    noteFound: !!note,
+    noteFolder: note?.folder,
+    allowed,
+  });
+  return allowed;
+}
+
+function resolveDraggedNoteId(event: DragEvent): string {
+  if (draggingNoteId.value) {
+    return draggingNoteId.value;
+  }
+
+  const transferId = event.dataTransfer?.getData("text/plain")?.trim() || "";
+  if (transferId) {
+    draggingNoteId.value = transferId;
+    debugLog("resolved drag note id from dataTransfer", { noteId: transferId });
+  }
+  return transferId;
+}
+
+function onRowDragStart(event: DragEvent, row: TreeRow) {
+  if (row.kind !== "note" || !canDragRow(row)) {
+    debugLog("dragstart ignored non-selected-row", {
+      rowKind: row.kind,
+      rowKey: rowKey(row),
+      selectedRows: [...selectedRows.value],
+    });
+    event.preventDefault();
+    return;
+  }
+
+  marquee.pending = false;
+  marquee.active = false;
+  marquee.justFinished = false;
+  setGlobalMarqueeTextSelection(false);
+
+  draggingNoteId.value = row.id;
+  dropFolderPath.value = "";
+  rootDropActive.value = false;
+
+  debugLog("dragstart note", {
+    noteId: row.id,
+    title: row.title,
+    folder: row.folder,
+    hasDataTransfer: Boolean(event.dataTransfer),
+  });
+
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", row.id);
+    debugLog("dragstart dataTransfer set", {
+      noteId: row.id,
+      effectAllowed: event.dataTransfer.effectAllowed,
+    });
+  }
+}
+
+function onRowDragEnd() {
+  debugLog("dragend", {
+    draggingNoteId: draggingNoteId.value,
+    dropFolderPath: dropFolderPath.value,
+    rootDropActive: rootDropActive.value,
+  });
+  setTimeout(() => {
+    clearNoteDragState();
+  }, 0);
+}
+
+function onFolderDragOver(event: DragEvent, row: TreeRow) {
+  if (row.kind !== "folder") {
+    debugLog("folder dragover ignored non-folder", { rowKind: row.kind });
+    return;
+  }
+
+  debugLog("folder dragover received", {
+    folderPath: row.path,
+    currentDropFolder: dropFolderPath.value,
+    draggingNoteId: draggingNoteId.value,
+    transferTypes: event.dataTransfer ? [...event.dataTransfer.types] : [],
+  });
+
+  const noteId = resolveDraggedNoteId(event);
+  if (!canDropNoteToFolder(noteId, row.path)) {
+    debugLog("folder dragover rejected", {
+      draggingNoteId: noteId,
+      targetFolder: row.path,
+    });
+    return;
+  }
+
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+  draggingNoteId.value = noteId;
+  dropFolderPath.value = row.path;
+  rootDropActive.value = false;
+  debugLog("folder dragover accepted", {
+    draggingNoteId: noteId,
+    targetFolder: row.path,
+  });
+}
+
+function onFolderDragLeave(event: DragEvent, row: TreeRow) {
+  if (row.kind !== "folder") {
+    return;
+  }
+
+  const currentTarget = event.currentTarget;
+  const relatedTarget = event.relatedTarget;
+  if (currentTarget instanceof HTMLElement && relatedTarget instanceof Node && currentTarget.contains(relatedTarget)) {
+    return;
+  }
+
+  if (dropFolderPath.value === row.path) {
+    debugLog("folder dragleave", { folderPath: row.path });
+    dropFolderPath.value = "";
+  }
+}
+
+function onFolderDrop(event: DragEvent, row: TreeRow) {
+  if (row.kind !== "folder") {
+    debugLog("folder drop ignored non-folder", { rowKind: row.kind });
+    return;
+  }
+
+  const noteId = resolveDraggedNoteId(event);
+  debugLog("folder drop received", {
+    targetFolder: row.path,
+    draggingNoteId: draggingNoteId.value,
+    resolvedNoteId: noteId,
+    transferTypes: event.dataTransfer ? [...event.dataTransfer.types] : [],
+  });
+  if (!canDropNoteToFolder(noteId, row.path)) {
+    debugLog("folder drop rejected", {
+      draggingNoteId: noteId,
+      targetFolder: row.path,
+    });
+    clearNoteDragState();
+    return;
+  }
+
+  event.preventDefault();
+  debugLog("folder drop emit move", {
+    noteId,
+    targetFolder: row.path,
+  });
+  emit("moveNoteToFolder", noteId, row.path);
+  clearNoteDragState();
+}
+
+function onRootDragOver(event: DragEvent) {
+  debugLog("root dragover received", {
+    draggingNoteId: draggingNoteId.value,
+    transferTypes: event.dataTransfer ? [...event.dataTransfer.types] : [],
+  });
+  const noteId = resolveDraggedNoteId(event);
+  if (!canDropNoteToFolder(noteId, "")) {
+    debugLog("root dragover rejected", {
+      draggingNoteId: noteId,
+    });
+    return;
+  }
+
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+  draggingNoteId.value = noteId;
+  rootDropActive.value = true;
+  dropFolderPath.value = "";
+  debugLog("root dragover accepted", {
+    draggingNoteId: noteId,
+  });
+}
+
+function onRootDragLeave(event: DragEvent) {
+  const currentTarget = event?.currentTarget;
+  const relatedTarget = event?.relatedTarget;
+  if (currentTarget instanceof HTMLElement && relatedTarget instanceof Node && currentTarget.contains(relatedTarget)) {
+    return;
+  }
+
+  debugLog("root dragleave", {
+    draggingNoteId: draggingNoteId.value,
+  });
+  rootDropActive.value = false;
+}
+
+function onRootDrop(event: DragEvent) {
+  debugLog("root drop received", {
+    draggingNoteId: draggingNoteId.value,
+    transferTypes: event.dataTransfer ? [...event.dataTransfer.types] : [],
+  });
+  const noteId = resolveDraggedNoteId(event);
+  if (!canDropNoteToFolder(noteId, "")) {
+    debugLog("root drop rejected", {
+      draggingNoteId: noteId,
+    });
+    clearNoteDragState();
+    return;
+  }
+
+  event.preventDefault();
+  debugLog("root drop emit move", {
+    noteId,
+    targetFolder: "",
+  });
+  emit("moveNoteToFolder", noteId, "");
+  clearNoteDragState();
+}
+
 function deleteNoteFromContext() {
   if (!contextMenu.noteId) {
     return;
@@ -942,7 +1272,13 @@ function deleteNoteFromContext() {
     @click.capture="onTreeClickCapture"
   >
     <div class="tree-header" @click="clearTreeSelection" @contextmenu="onRootContextMenu($event)">
-      <div class="root-row">
+        <div
+          class="root-row"
+          :class="{ 'drop-target-folder': rootDropActive }"
+          @dragover="onRootDragOver"
+          @dragleave="onRootDragLeave($event)"
+          @drop="onRootDrop"
+        >
         <v-icon icon="mdi-home-outline" size="16" />
         <span>root</span>
         <button
@@ -969,10 +1305,18 @@ function deleteNoteFromContext() {
           'note-row': row.kind === 'note',
           'row-selected': isRowSelected(row),
           'note-active': row.kind === 'note' && row.id === selectedNoteId,
+          'drag-source-note': isDragSourceNote(row),
+          'drop-target-folder': isDropTargetFolder(row),
         }"
+        :draggable="canDragRow(row) && !(row.kind === 'note' && isRenamingNoteRow(row))"
         :style="rowStyle(row.depth)"
         @click="onRowClick(row)"
         @contextmenu="onRowContextMenu($event, row)"
+        @dragstart="onRowDragStart($event, row)"
+        @dragend="onRowDragEnd"
+        @dragover="onFolderDragOver($event, row)"
+        @dragleave="onFolderDragLeave($event, row)"
+        @drop="onFolderDrop($event, row)"
       >
         <button
           v-if="row.kind === 'folder'"
@@ -1028,15 +1372,6 @@ function deleteNoteFromContext() {
     </div>
 
     <div class="tree-marquee" :style="marqueeStyle" />
-
-    <pre v-if="DEBUG_TREE_MARQUEE" class="tree-debug">
-event={{ debugInfo.lastEvent }}
-start=({{ Math.round(debugInfo.startX) }}, {{ Math.round(debugInfo.startY) }}) current=({{ Math.round(debugInfo.currentX) }}, {{ Math.round(debugInfo.currentY) }})
-selectionY={{ Math.round(debugInfo.selectionTop) }}..{{ Math.round(debugInfo.selectionBottom) }} scope={{ debugInfo.scope }}
-rowsFound={{ debugInfo.rowsFound }} rowsHit={{ debugInfo.rowsHit }} selected={{ debugInfo.selectedCount }} latestNote={{ debugInfo.latestNoteId || "-" }}
-target={{ debugInfo.targetTag || "-" }} classes={{ debugInfo.targetClasses || "-" }}
-selectedPreview={{ debugInfo.selectedPreview || "-" }}
-    </pre>
 
     <p v-if="notes.length === 0" class="empty-state">No notes yet. Right-click root to create content.</p>
 
@@ -1109,6 +1444,7 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
   background: transparent;
   min-height: 100%;
   padding: 0.2rem 0.15rem 0.35rem;
+  -webkit-user-select: none;
   user-select: none;
   position: relative;
 }
@@ -1126,6 +1462,8 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
   gap: 0.42rem;
   font-size: 1.02rem;
   color: var(--fox-text-strong);
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .tree-scroll {
@@ -1145,6 +1483,8 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
   border-radius: 8px;
   color: var(--fox-text-body);
   cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .folder-row {
@@ -1153,6 +1493,14 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
 
 .note-row {
   cursor: pointer;
+}
+
+.note-row[draggable="true"] {
+  cursor: grab;
+}
+
+.note-row[draggable="true"]:active {
+  cursor: grabbing;
 }
 
 .tree-row:hover {
@@ -1174,6 +1522,16 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
 
 .tree-row.row-selected.note-active {
   background: color-mix(in srgb, #2f8bff 48%, #33405c 52%);
+}
+
+.tree-row.drag-source-note {
+  opacity: 0.55;
+}
+
+.tree-row.drop-target-folder,
+.root-row.drop-target-folder {
+  background: color-mix(in srgb, #2f8bff 42%, var(--fox-chip) 58%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #76bcff 64%, transparent 36%);
 }
 
 .disclosure,
@@ -1204,6 +1562,8 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .folder-rename-input,
@@ -1215,6 +1575,8 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
   color: var(--fox-text-strong);
   padding: 0 0.42rem;
   outline: none;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .folder-rename-input:focus,
@@ -1297,15 +1659,4 @@ selectedPreview={{ debugInfo.selectedPreview || "-" }}
   z-index: 12;
 }
 
-.tree-debug {
-  margin: 0.5rem 0.35rem 0;
-  border: 1px solid color-mix(in srgb, #3aa5ff 40%, transparent 60%);
-  border-radius: 6px;
-  background: color-mix(in srgb, #0f1826 80%, black 20%);
-  color: #9fceff;
-  padding: 0.4rem 0.48rem;
-  font-size: 0.72rem;
-  line-height: 1.3;
-  white-space: pre-wrap;
-}
 </style>

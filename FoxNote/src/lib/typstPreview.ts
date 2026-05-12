@@ -34,7 +34,7 @@ function buildThemedSource(source: string, options: TypstRenderOptions = {}): st
     '#import "@preview/note-me:0.6.0": *',
     '#import "@preview/mitex:0.2.7": *',
     `#set page(width: ${pageWidth}, height: ${pageHeight}, margin: 0.5pt)`,
-    `#set text(size: 20pt, fill: rgb("${textColor}"), font: ("Source Han Serif SC", "Noto Serif CJK SC", "Libertinus Serif", "New Computer Modern", "DejaVu Sans Mono"))`,
+    `#set text(size: 18pt, fill: rgb("${textColor}"), font: ("Source Han Serif SC", "Noto Serif CJK SC", "Libertinus Serif", "New Computer Modern", "DejaVu Sans Mono"))`,
     `#set text(top-edge: "bounds", bottom-edge: "bounds")`,
     `#show math.equation: set text(top-edge: "bounds", bottom-edge: "bounds")`,
     "",
