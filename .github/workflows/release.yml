@@ -92,6 +92,43 @@ jobs:
       - name: Setup Android SDK/NDK
         uses: android-actions/setup-android@v3
 
+      - name: Resolve Android NDK ranlib path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NDK_CANDIDATE="${ANDROID_NDK_LATEST_HOME:-}"
+
+          if [ -z "$NDK_CANDIDATE" ] && [ -n "${ANDROID_NDK_HOME:-}" ]; then
+            NDK_CANDIDATE="$ANDROID_NDK_HOME"
+          fi
+
+          if [ -z "$NDK_CANDIDATE" ] && [ -n "${ANDROID_NDK_ROOT:-}" ]; then
+            NDK_CANDIDATE="$ANDROID_NDK_ROOT"
+          fi
+
+          if [ -z "$NDK_CANDIDATE" ]; then
+            SDK_ROOT_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+            if [ -n "$SDK_ROOT_PATH" ] && [ -d "$SDK_ROOT_PATH/ndk" ]; then
+              NDK_CANDIDATE="$(ls -d "$SDK_ROOT_PATH/ndk"/* 2>/dev/null | sort -V | tail -n 1)"
+            fi
+          fi
+
+          if [ -z "$NDK_CANDIDATE" ]; then
+            echo "Failed to locate Android NDK path" >&2
+            exit 1
+          fi
+
+          LLVM_RANLIB_PATH="$NDK_CANDIDATE/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
+
+          if [ ! -x "$LLVM_RANLIB_PATH" ]; then
+            echo "Resolved llvm-ranlib is not executable: $LLVM_RANLIB_PATH" >&2
+            exit 1
+          fi
+
+          echo "ANDROID_NDK_RESOLVED=$NDK_CANDIDATE" >> "$GITHUB_ENV"
+          echo "LLVM_RANLIB=$LLVM_RANLIB_PATH" >> "$GITHUB_ENV"
+
       - name: Install Rust Android target
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -105,9 +142,9 @@ jobs:
         run: pnpm tauri android build --apk --aab
         working-directory: FoxNote
         env:
-          TARGET_RANLIB: ${{ env.ANDROID_NDK_LATEST_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-          RANLIB_aarch64_linux_android: ${{ env.ANDROID_NDK_LATEST_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_RANLIB: ${{ env.ANDROID_NDK_LATEST_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+          TARGET_RANLIB: ${{ env.LLVM_RANLIB }}
+          RANLIB_aarch64_linux_android: ${{ env.LLVM_RANLIB }}
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_RANLIB: ${{ env.LLVM_RANLIB }}
 
       - name: Upload Android assets to release
         uses: softprops/action-gh-release@v2
