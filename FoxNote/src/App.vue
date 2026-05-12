@@ -71,6 +71,7 @@ const syncBusy = ref(false);
 let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
+let sidebarConstraintFrame: number | null = null;
 const deleteDialogOpen = ref(false);
 const pendingDeleteId = ref("");
 const pendingDeleteTitle = ref("");
@@ -1361,8 +1362,29 @@ onBeforeUnmount(() => {
   clearErrorTimer();
   onSidebarResizeEnd();
   window.removeEventListener("keydown", onGlobalKeydown);
-  window.removeEventListener("resize", syncSidebarConstraints);
+  window.removeEventListener("resize", scheduleSidebarConstraintSync);
+  cancelScheduledSidebarConstraintSync();
 });
+
+function cancelScheduledSidebarConstraintSync() {
+  if (sidebarConstraintFrame === null) {
+    return;
+  }
+
+  window.cancelAnimationFrame(sidebarConstraintFrame);
+  sidebarConstraintFrame = null;
+}
+
+function scheduleSidebarConstraintSync() {
+  if (sidebarConstraintFrame !== null) {
+    return;
+  }
+
+  sidebarConstraintFrame = window.requestAnimationFrame(() => {
+    sidebarConstraintFrame = null;
+    syncSidebarConstraints();
+  });
+}
 
 function toErrorMessage(reason: unknown): string {
   if (typeof reason === "string") {
@@ -1384,7 +1406,7 @@ onMounted(() => {
 
   syncSidebarConstraints();
   window.addEventListener("keydown", onGlobalKeydown);
-  window.addEventListener("resize", syncSidebarConstraints);
+  window.addEventListener("resize", scheduleSidebarConstraintSync);
   void bootstrap();
 });
 

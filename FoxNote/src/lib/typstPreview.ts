@@ -24,6 +24,37 @@ interface TypstRenderOptions {
   pageHeight?: string;
 }
 
+interface WorkerRenderRequest {
+  type: "render-svg";
+  requestId: number;
+  source: string;
+  options?: TypstRenderOptions;
+  portable?: boolean;
+}
+
+interface WorkerRenderSuccessResponse {
+  type: "render-svg-result";
+  requestId: number;
+  ok: true;
+  svg: string;
+}
+
+interface WorkerRenderErrorResponse {
+  type: "render-svg-result";
+  requestId: number;
+  ok: false;
+  error: string;
+}
+
+type WorkerRenderResponse = WorkerRenderSuccessResponse | WorkerRenderErrorResponse;
+
+let renderWorker: Worker | null = null;
+let workerRequestId = 0;
+let workerInitAttempted = false;
+let workerDisabledReason = "";
+let workerEnabledLogged = false;
+const workerPending = new Map<number, { resolve: (svg: string) => void; reject: (error: Error) => void }>();
+
 function buildThemedSource(source: string, options: TypstRenderOptions = {}): string {
   const darkMode = options.darkMode ?? false;
   const pageWidth = options.pageWidth ?? "auto";
@@ -104,6 +135,107 @@ function renderSvg(mainContent: string, portable: boolean): Promise<string> {
   } as any);
 }
 
+function rejectAllWorkerPending(error: Error) {
+  for (const pending of workerPending.values()) {
+    pending.reject(error);
+  }
+  workerPending.clear();
+}
+
+function disableRenderWorker(reason: string) {
+  if (workerEnabledLogged) {
+    console.info(`[TypstPreview] Worker disabled: ${reason}`);
+  }
+  workerDisabledReason = reason;
+  if (renderWorker) {
+    renderWorker.terminate();
+    renderWorker = null;
+  }
+
+  rejectAllWorkerPending(new Error(reason));
+}
+
+function getRenderWorker(): Worker | null {
+  if (workerDisabledReason) {
+    return null;
+  }
+
+  if (renderWorker) {
+    return renderWorker;
+  }
+
+  if (workerInitAttempted || typeof window === "undefined" || typeof Worker === "undefined") {
+    return null;
+  }
+
+  workerInitAttempted = true;
+
+  try {
+    const worker = new Worker(new URL("../workers/typstRenderWorker.ts", import.meta.url), {
+      type: "module",
+    });
+
+    worker.addEventListener("message", (event: MessageEvent<WorkerRenderResponse>) => {
+      const response = event.data;
+      if (!response || response.type !== "render-svg-result") {
+        return;
+      }
+
+      const pending = workerPending.get(response.requestId);
+      if (!pending) {
+        return;
+      }
+      workerPending.delete(response.requestId);
+
+      if (response.ok) {
+        pending.resolve(response.svg);
+      } else {
+        pending.reject(new Error(response.error));
+      }
+    });
+
+    worker.addEventListener("error", (event) => {
+      const message = event.message || "Typst render worker failed";
+      disableRenderWorker(message);
+    });
+
+    renderWorker = worker;
+    if (!workerEnabledLogged) {
+      console.info("[TypstPreview] Worker enabled");
+      workerEnabledLogged = true;
+    }
+    return renderWorker;
+  } catch (error) {
+    disableRenderWorker(error instanceof Error ? error.message : String(error ?? "Failed to start Typst render worker"));
+    return null;
+  }
+}
+
+function renderSvgInWorker(
+  source: string,
+  options: TypstRenderOptions = {},
+  portable = false,
+): Promise<string> | null {
+  const worker = getRenderWorker();
+  if (!worker) {
+    return null;
+  }
+
+  const requestId = ++workerRequestId;
+  const request: WorkerRenderRequest = {
+    type: "render-svg",
+    requestId,
+    source,
+    options,
+    portable,
+  };
+
+  return new Promise<string>((resolve, reject) => {
+    workerPending.set(requestId, { resolve, reject });
+    worker.postMessage(request);
+  });
+}
+
 export async function renderTypstToSvg(source: string): Promise<string> {
   await ensureInitialized();
 
@@ -114,6 +246,15 @@ export async function renderTypstToSvgWithTheme(
   source: string,
   options: TypstRenderOptions = {},
 ): Promise<string> {
+  const workerResult = renderSvgInWorker(source, options, false);
+  if (workerResult) {
+    try {
+      return await workerResult;
+    } catch (error) {
+      disableRenderWorker(error instanceof Error ? error.message : String(error ?? "Typst render worker error"));
+    }
+  }
+
   await ensureInitialized();
 
   const themedSource = buildThemedSource(source, options);
@@ -125,6 +266,15 @@ export async function renderTypstToPortableSvgWithTheme(
   source: string,
   options: TypstRenderOptions = {},
 ): Promise<string> {
+  const workerResult = renderSvgInWorker(source, options, true);
+  if (workerResult) {
+    try {
+      return await workerResult;
+    } catch (error) {
+      disableRenderWorker(error instanceof Error ? error.message : String(error ?? "Typst render worker error"));
+    }
+  }
+
   await ensureInitialized();
 
   const themedSource = buildThemedSource(source, options);

@@ -62,16 +62,22 @@ function syncDarkMode() {
 function syncPreviewWidth() {
   const host = previewHostRef.value;
   if (!host) {
-    return;
+    return false;
   }
 
   const widthPx = Math.max(0, host.clientWidth - 8);
   if (widthPx <= 0) {
-    return;
+    return false;
   }
 
   const widthPt = Math.max(120, Math.round(widthPx * 0.95));
-  previewPageWidth.value = `${widthPt}pt`;
+  const nextWidth = `${widthPt}pt`;
+  if (previewPageWidth.value === nextWidth) {
+    return false;
+  }
+
+  previewPageWidth.value = nextWidth;
+  return true;
 }
 
 function bindPreviewResizeObserver() {
@@ -84,7 +90,6 @@ function bindPreviewResizeObserver() {
 
   previewResizeObserver = new ResizeObserver(() => {
     syncPreviewWidth();
-    void renderPreview();
   });
   previewResizeObserver.observe(previewHostRef.value);
 }

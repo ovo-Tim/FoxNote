@@ -23,6 +23,7 @@ let renderTicket = 0;
 
 let mediaQuery: MediaQueryList | null = null;
 let previewResizeObserver: ResizeObserver | null = null;
+let previewResizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function applyInlineWrap(value: string, start: number, end: number, left: string, right = left): {
   nextValue: string;
@@ -175,16 +176,30 @@ function syncDarkMode() {
 function syncPreviewWidth() {
   const host = previewHostRef.value;
   if (!host) {
-    return;
+    return false;
   }
 
   const widthPx = Math.max(0, host.clientWidth - 8);
   if (widthPx <= 0) {
-    return;
+    return false;
   }
 
   const widthPt = Math.max(120, Math.round(widthPx * 0.95));
-  previewPageWidth.value = `${widthPt}pt`;
+  const nextWidth = `${widthPt}pt`;
+  if (previewPageWidth.value === nextWidth) {
+    return false;
+  }
+
+  previewPageWidth.value = nextWidth;
+  return true;
+}
+
+function clearPreviewResizeDebounceTimer() {
+  if (!previewResizeDebounceTimer) {
+    return;
+  }
+  clearTimeout(previewResizeDebounceTimer);
+  previewResizeDebounceTimer = null;
 }
 
 function bindPreviewResizeObserver() {
@@ -196,8 +211,16 @@ function bindPreviewResizeObserver() {
   }
 
   previewResizeObserver = new ResizeObserver(() => {
-    syncPreviewWidth();
-    void renderPreview(props.modelValue);
+    const widthChanged = syncPreviewWidth();
+    if (!widthChanged) {
+      return;
+    }
+
+    clearPreviewResizeDebounceTimer();
+    previewResizeDebounceTimer = setTimeout(() => {
+      previewResizeDebounceTimer = null;
+      void renderPreview(props.modelValue);
+    }, 120);
   });
   previewResizeObserver.observe(previewHostRef.value);
 }
@@ -219,6 +242,7 @@ onBeforeUnmount(() => {
   mediaQuery = null;
   previewResizeObserver?.disconnect();
   previewResizeObserver = null;
+  clearPreviewResizeDebounceTimer();
 });
 
 const previewText = computed(() => {
