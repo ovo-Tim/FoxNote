@@ -1,5 +1,6 @@
 # FoxNote
-A modern block-based note app focus on simplicity and flexibility.
+FoxNote is a modern note-taking application built on the principle of radical transparency. While other apps lock your data in proprietary clouds or complex databases, FoxNote stays out of your way with a simple, block-based TOML structure.
+![](./docs/image.png)
 
 ## Key Features
 ### Simple
