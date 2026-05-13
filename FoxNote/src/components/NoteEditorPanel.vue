@@ -11,6 +11,8 @@ import { createDefaultBlockForType, getBlockPlugin, listBlockPlugins } from "../
 import { blockPreviewText, cloneBlocks } from "../editor/utils";
 import type { NoteBlock, NoteDocument, NoteRecord } from "../types/note";
 import type { BlockRenderContext } from "../editor/plugins/types";
+import { splitTypstContentIntoBlocks } from "../editor/typstHeadingSplit";
+import { shouldSkipMarqueeStart } from "../editor/interactionTargets";
 
 const props = defineProps<{
   note: NoteRecord | null;
@@ -487,60 +489,6 @@ function buildBlockRenderContext(index: number, block: NoteBlock): BlockRenderCo
     updateFolded: (nextFolded) => updateBlockFolded(index, nextFolded),
     updateSummary: (nextSummary) => updateBlockSummary(index, nextSummary),
   };
-}
-
-function splitTypstContentIntoBlocks(content: string): NoteBlock[] | null {
-  const normalized = content.replace(/\r\n/g, "\n");
-  const lines = normalized.split("\n");
-  const blocks: NoteBlock[] = [];
-  const typstLines: string[] = [];
-  let foundHeading = false;
-
-  const flushTypstLines = () => {
-    const chunk = typstLines.join("\n").trim();
-    typstLines.length = 0;
-    if (!chunk) {
-      return;
-    }
-
-    blocks.push({
-      type: "typst",
-      content: chunk,
-    });
-  };
-
-  for (let cursor = 0; cursor < lines.length; cursor += 1) {
-    const line = lines[cursor] ?? "";
-    const match = line.trim().match(/^(={1,6})\s+(.+)$/);
-    if (match) {
-      const title = (match[2] ?? "").trim();
-      if (!title) {
-        typstLines.push(line);
-        continue;
-      }
-
-      flushTypstLines();
-      blocks.push({
-        type: "title",
-        level: (match[1] ?? "=").length,
-        content: title,
-        folded: false,
-        summary: "",
-      });
-      foundHeading = true;
-      continue;
-    }
-
-    typstLines.push(line);
-  }
-
-  flushTypstLines();
-
-  if (!foundHeading || blocks.length === 0) {
-    return null;
-  }
-
-  return blocks;
 }
 
 function splitTypstHeadingBlock(index: number, content: string): boolean {
@@ -1712,11 +1660,7 @@ function onEditorPaneMouseDown(event: MouseEvent) {
     return;
   }
 
-  if (
-    targetEl.closest(
-      "button, input, textarea, [contenteditable='true'], .v-field, .block-hover-actions, .tag-menu, .slash-menu, .action-menu, .block-resize-handle, .image-paint-zone, .vp-editor, .vp-main, .vp-image, .vp-toolbar, .tldraw-zone, .tl-container, .tlui-layout",
-    )
-  ) {
+  if (shouldSkipMarqueeStart(targetEl)) {
     return;
   }
 
@@ -2035,7 +1979,7 @@ watch(form, emitChange, { deep: true });
   border-radius: 0;
   background: transparent;
   padding: 0.65rem 0rem 0.85rem;
-  width: min(100%, 980px);
+  width: min(100%, 80rem);
   min-height: 100%;
   position: relative;
 }

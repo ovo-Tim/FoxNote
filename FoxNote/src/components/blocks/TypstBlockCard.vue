@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { renderTypstToSvgWithTheme } from "../../lib/typstPreview";
+import { shouldIgnoreBlockFocusClick } from "../../editor/interactionTargets";
+import { openPreviewLinkUrl, resolvePreviewLinkUrl } from "../../editor/previewLinks";
 
 const props = defineProps<{
   modelValue: string;
@@ -20,6 +22,8 @@ const prefersDark = ref(false);
 const previewHostRef = ref<HTMLElement | null>(null);
 const previewPageWidth = ref<string | undefined>(undefined);
 let renderTicket = 0;
+
+const MAX_PREVIEW_WIDTH_REM = 40;
 
 let mediaQuery: MediaQueryList | null = null;
 let previewResizeObserver: ResizeObserver | null = null;
@@ -179,7 +183,12 @@ function syncPreviewWidth() {
     return false;
   }
 
-  const widthPx = Math.max(0, host.clientWidth - 8);
+  const rootFontSize =
+    typeof window !== "undefined"
+      ? Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16
+      : 16;
+  const maxWidthPx = MAX_PREVIEW_WIDTH_REM * rootFontSize;
+  const widthPx = Math.max(0, Math.min(host.clientWidth - 8, maxWidthPx));
   if (widthPx <= 0) {
     return false;
   }
@@ -324,10 +333,37 @@ watch(
 function onInput(value: string) {
   emit("updateModelValue", value);
 }
+
+function onCardClick(event: MouseEvent) {
+  const linkUrl = resolvePreviewLinkUrl({
+    target: event.target,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    scope: event.currentTarget instanceof Element ? event.currentTarget : null,
+  });
+
+  if (linkUrl) {
+    event.preventDefault();
+    event.stopPropagation();
+    void openPreviewLinkUrl(linkUrl);
+    return;
+  }
+
+  if (props.editing) {
+    return;
+  }
+
+  const target = event.target instanceof Element ? event.target : null;
+  if (shouldIgnoreBlockFocusClick(target)) {
+    return;
+  }
+
+  emit("focus");
+}
 </script>
 
 <template>
-  <section class="typst-card" :class="{ editing }" @click="!editing && emit('focus')">
+  <section class="typst-card" :class="{ editing }" @click="onCardClick">
     <template v-if="editing">
       <div class="editor-grid">
         <div class="pane">
@@ -446,6 +482,15 @@ function onInput(value: string) {
   height: auto;
   display: block;
   background: transparent;
+}
+
+.preview-svg :deep(svg a .pseudo-link) {
+  cursor: pointer;
+}
+
+.preview-svg :deep(svg foreignObject),
+.preview-svg :deep(svg foreignObject *) {
+  pointer-events: none;
 }
 
 .preview-svg {

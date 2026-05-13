@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { renderTypstToSvgWithTheme } from "../../lib/typstPreview";
+import { shouldIgnoreBlockFocusClick } from "../../editor/interactionTargets";
+import { openPreviewLinkUrl, resolvePreviewLinkUrl } from "../../editor/previewLinks";
 
 const props = defineProps<{
   modelValue: string;
@@ -134,6 +136,33 @@ function onLevelInput(rawValue: string | number) {
   emit("updateLevel", next);
 }
 
+function onCardClick(event: MouseEvent) {
+  const linkUrl = resolvePreviewLinkUrl({
+    target: event.target,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    scope: event.currentTarget instanceof Element ? event.currentTarget : null,
+  });
+
+  if (linkUrl) {
+    event.preventDefault();
+    event.stopPropagation();
+    void openPreviewLinkUrl(linkUrl);
+    return;
+  }
+
+  if (props.editing) {
+    return;
+  }
+
+  const target = event.target instanceof Element ? event.target : null;
+  if (shouldIgnoreBlockFocusClick(target)) {
+    return;
+  }
+
+  emit("focus");
+}
+
 onMounted(() => {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return;
@@ -163,7 +192,7 @@ watch(
 </script>
 
 <template>
-  <section class="title-card" :class="{ editing }" @click="!editing && emit('focus')">
+  <section class="title-card" :class="{ editing }" @click="onCardClick">
     <div class="title-row">
       <button type="button" class="fold-toggle" :title="folded ? 'Expand section' : 'Fold section'"
         @click.stop="emit('updateFolded', !folded)">
@@ -262,6 +291,15 @@ watch(
   display: block;
   width: 100%;
   height: auto;
+}
+
+.title-preview :deep(svg a .pseudo-link) {
+  cursor: pointer;
+}
+
+.title-preview :deep(svg foreignObject),
+.title-preview :deep(svg foreignObject *) {
+  pointer-events: none;
 }
 
 .title-level-chip {
