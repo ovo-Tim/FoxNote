@@ -61,6 +61,8 @@ function buildThemedSource(source: string, options: TypstRenderOptions = {}): st
     `#set text(size: 18pt, fill: rgb("${textColor}"), font: ("Source Han Serif SC", "Noto Serif CJK SC", "Libertinus Serif", "New Computer Modern", "DejaVu Sans Mono"))`,
     `#set text(top-edge: "bounds", bottom-edge: "bounds")`,
     `#show math.equation: set text(top-edge: "bounds", bottom-edge: "bounds")`,
+    `#show link: set text(fill: aqua)`,
+    `#show link: underline`,
     "",
     source,
   ].join("\n");

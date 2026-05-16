@@ -1095,11 +1095,23 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
     return false;
   }
 
-  if (target.closest("input, textarea, [contenteditable='true']")) {
+   if (target.closest("input, textarea, [contenteditable='true']")) {
     return true;
   }
 
-  return Boolean(target.closest(".v-field"));
+   return Boolean(target.closest(".v-field, .v-input, .v-textarea, .ProseMirror"));
+}
+
+function isTextEditingContext(target: EventTarget | null): boolean {
+  if (isTextEntryTarget(target)) {
+    return true;
+  }
+
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  return isTextEntryTarget(document.activeElement);
 }
 
 function resolveTargetElement(target: EventTarget | null): HTMLElement | null {
@@ -1157,7 +1169,7 @@ function onKeydown(event: KeyboardEvent) {
     return;
   }
 
-  if (isTextEntryTarget(event.target)) {
+  if (isTextEditingContext(event.target)) {
     return;
   }
 
