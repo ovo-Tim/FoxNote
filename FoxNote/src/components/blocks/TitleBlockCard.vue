@@ -744,6 +744,7 @@ watch(
         <div ref="titleSpellField.shellRef" class="title-spellcheck-wrap">
           <v-text-field :model-value="modelValue" density="compact" variant="solo-filled" hide-details label="Title"
             class="title-input" @update:model-value="(value) => emit('updateModelValue', String(value ?? ''))"
+            spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
             @focus="titleSpellField.syncMetrics" @update:focused="titleSpellField.syncMetrics" />
           <div v-if="titleSpellField.layerVisible" class="spellcheck-highlight-layer spellcheck-highlight-layer--single" :style="titleSpellField.layerStyle" aria-hidden="true">
             <div class="spellcheck-highlight-content spellcheck-highlight-content--single" :style="titleSpellField.mirrorStyle">
@@ -781,6 +782,7 @@ watch(
       <div ref="summarySpellField.shellRef" class="summary-spellcheck-wrap">
         <v-textarea v-model="localSummary" rows="2" max-rows="5" auto-grow density="compact" variant="solo-filled"
           hide-details class="summary-input" label="Summary when folded"
+          spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
           placeholder="Optional summary shown when section is folded" @blur="onSummaryBlur"
           @focus="summarySpellField.syncMetrics" @update:focused="summarySpellField.syncMetrics" />
         <div v-if="summarySpellField.layerVisible" class="spellcheck-highlight-layer" :style="summarySpellField.layerStyle" aria-hidden="true">
@@ -936,6 +938,9 @@ watch(
   z-index: 2;
   color: var(--fox-text-body) !important;
   caret-color: var(--fox-text-body);
+  text-transform: none;
+  font-variant-east-asian: normal;
+  font-feature-settings: "fwid" 0, "hwid" 0, "pwid" 0, "palt" 0;
 }
 
 .title-spellcheck-wrap :deep(input::selection),
@@ -967,6 +972,9 @@ watch(
   word-break: break-word;
   color: transparent;
   -webkit-text-fill-color: transparent;
+  text-transform: none;
+  font-variant-east-asian: normal;
+  font-feature-settings: "fwid" 0, "hwid" 0, "pwid" 0, "palt" 0;
 }
 
 .spellcheck-highlight-content--single {

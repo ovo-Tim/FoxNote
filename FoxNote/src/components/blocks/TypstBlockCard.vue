@@ -745,9 +745,10 @@ function onCardClick(event: MouseEvent) {
           <div ref="textareaShellRef" class="spellcheck-editor-wrap">
             <v-textarea :model-value="modelValue" rows="3" max-rows="16" auto-grow hide-details density="compact"
              variant="solo-filled" class="code-input" @update:model-value="(value) => onInput(String(value ?? ''))"
-             placeholder="Input typst code here..."
-             title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
-             @blur="onEditorBlur" @keydown="onEditorKeydown" @focus="syncSpellMirrorMetrics" @update:focused="syncSpellMirrorMetrics" />
+             spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
+              placeholder="Input typst code here..."
+              title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
+              @blur="onEditorBlur" @keydown="onEditorKeydown" @focus="syncSpellMirrorMetrics" @update:focused="syncSpellMirrorMetrics" />
             <div v-if="spellHighlightLayerVisible" class="spellcheck-highlight-layer" :style="spellHighlightLayerStyle" aria-hidden="true">
               <div class="spellcheck-highlight-content" :style="spellMirrorStyle">
                 <span
@@ -849,6 +850,9 @@ function onCardClick(event: MouseEvent) {
   z-index: 2;
   color: var(--fox-text-body) !important;
   caret-color: var(--fox-text-body);
+  text-transform: none;
+  font-variant-east-asian: normal;
+  font-feature-settings: "fwid" 0, "hwid" 0, "pwid" 0, "palt" 0;
 }
 
 .spellcheck-editor-wrap :deep(textarea:not(.v-textarea__sizer)::selection) {
@@ -874,6 +878,9 @@ function onCardClick(event: MouseEvent) {
   word-break: break-word;
   color: transparent;
   -webkit-text-fill-color: transparent;
+  text-transform: none;
+  font-variant-east-asian: normal;
+  font-feature-settings: "fwid" 0, "hwid" 0, "pwid" 0, "palt" 0;
 }
 
 .spellcheck-highlight-segment {

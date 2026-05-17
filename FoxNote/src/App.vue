@@ -277,7 +277,7 @@ function buildPdfExportDocument(note: NoteRecord, bodyBlocks: string[]): string 
     '#import "@preview/note-me:0.6.0": *',
     '#import "@preview/mitex:0.2.7": *',
     '#set page(margin: (x: 22mm, y: 18mm))',
-    '#set text(font: ("Source Han Serif SC", "New Computer Modern"), size: 10pt, fill: rgb("#111827"))',
+    '#set text(font: ("Libertinus Serif", "New Computer Modern", "DejaVu Serif", "Source Han Serif SC"), size: 10pt, fill: rgb("#111827"))',
     '#show image: set block(breakable: false)',
     `#set document(title: "${escapedTitle}", author: "${escapedAuthor}")`,
     `#let foxnote-meta(title, date, tags) = [`,
