@@ -3,6 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { renderTypstToSvgWithTheme } from "../../lib/typstPreview";
 import { shouldIgnoreBlockFocusClick } from "../../editor/interactionTargets";
 import { openPreviewLinkUrl, resolvePreviewLinkUrl } from "../../editor/previewLinks";
+import SpellcheckPanel from "../SpellcheckPanel.vue";
+import type { SpellcheckIssue } from "../../editor/spellcheck";
+import { useSpellcheckField } from "../../editor/spellcheck";
+import {
+  buildSpellcheckHighlightSegments,
+  computeSpellcheckPopoverPlacement,
+  type SpellcheckHighlightSegment,
+} from "../../editor/spellcheckHighlight";
 
 const props = defineProps<{
   modelValue: string;
@@ -20,7 +28,32 @@ const previewError = ref("");
 const rendering = ref(false);
 const prefersDark = ref(false);
 const previewHostRef = ref<HTMLElement | null>(null);
+const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const textareaShellRef = ref<HTMLElement | null>(null);
 const previewPageWidth = ref<string | undefined>(undefined);
+const spellcheckPanelRef = ref<InstanceType<typeof SpellcheckPanel> | null>(null);
+const activeSpellIssueId = ref<string | null>(null);
+const spellPopoverPosition = ref<{ left: number; top: number } | null>(null);
+const spellPopoverPlacement = ref<"top" | "bottom">("bottom");
+const spellMirrorScrollTop = ref(0);
+const spellMirrorScrollLeft = ref(0);
+const spellMirrorOffsetTop = ref(0);
+const spellMirrorOffsetLeft = ref(0);
+const spellMirrorWidth = ref(0);
+const spellMirrorHeight = ref(0);
+const spellMirrorPaddingTop = ref(12);
+const spellMirrorPaddingRight = ref(12);
+const spellMirrorPaddingBottom = ref(12);
+const spellMirrorPaddingLeft = ref(12);
+const spellMirrorFontSize = ref("0.95rem");
+const spellMirrorLineHeight = ref("1.5");
+const spellMirrorFontFamily = ref(
+  '"Iosevka", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+);
+const spellMirrorFontWeight = ref("400");
+const spellMirrorLetterSpacing = ref("normal");
+const spellMirrorTabSize = ref("4");
+const spellIssueSpanMap = new Map<string, HTMLElement>();
 let renderTicket = 0;
 
 const MAX_PREVIEW_WIDTH_REM = 40;
@@ -28,6 +61,98 @@ const MAX_PREVIEW_WIDTH_REM = 40;
 let mediaQuery: MediaQueryList | null = null;
 let previewResizeObserver: ResizeObserver | null = null;
 let previewResizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let textareaResizeObserver: ResizeObserver | null = null;
+let boundTextareaElement: HTMLTextAreaElement | null = null;
+let suppressNextEditorBlur = false;
+
+const {
+  issues: spellIssues,
+  loading: spellLoading,
+  error: spellError,
+  applySuggestion: applySpellSuggestion,
+} = useSpellcheckField({
+  source: computed(() => props.modelValue),
+  mode: "typst",
+  enabled: computed(() => props.editing),
+  onApplied: (nextText) => {
+    emit("updateModelValue", nextText);
+  },
+});
+
+const spellHighlightSegments = computed<SpellcheckHighlightSegment[]>(() =>
+  buildSpellcheckHighlightSegments(props.modelValue, spellIssues.value),
+);
+
+const activeSpellIssue = computed<SpellcheckIssue | null>(() => {
+  if (!activeSpellIssueId.value) {
+    return null;
+  }
+  return spellIssues.value.find((issue) => issue.id === activeSpellIssueId.value) ?? null;
+});
+
+const spellPanelIssues = computed(() => (activeSpellIssue.value ? [activeSpellIssue.value] : []));
+const spellPanelVisible = computed(
+  () => props.editing && !!textareaRef.value && (Boolean(activeSpellIssue.value) || Boolean(spellError.value)),
+);
+const spellHighlightLayerVisible = computed(
+  () => props.editing && spellMirrorWidth.value > 0 && spellMirrorHeight.value > 0,
+);
+const spellHighlightLayerStyle = computed(() => ({
+  top: `${spellMirrorOffsetTop.value}px`,
+  left: `${spellMirrorOffsetLeft.value}px`,
+  width: `${spellMirrorWidth.value}px`,
+  height: `${spellMirrorHeight.value}px`,
+}));
+const spellMirrorStyle = computed(() => ({
+  padding: `${spellMirrorPaddingTop.value}px ${spellMirrorPaddingRight.value}px ${spellMirrorPaddingBottom.value}px ${spellMirrorPaddingLeft.value}px`,
+  fontSize: spellMirrorFontSize.value,
+  lineHeight: spellMirrorLineHeight.value,
+  fontFamily: spellMirrorFontFamily.value,
+  fontWeight: spellMirrorFontWeight.value,
+  letterSpacing: spellMirrorLetterSpacing.value,
+  tabSize: spellMirrorTabSize.value,
+  transform: `translate(${-spellMirrorScrollLeft.value}px, ${-spellMirrorScrollTop.value}px)`,
+}));
+
+watch(
+  spellIssues,
+  (issues) => {
+    if (!issues.length) {
+      activeSpellIssueId.value = null;
+      spellPopoverPosition.value = null;
+      return;
+    }
+
+    if (activeSpellIssueId.value && !issues.some((issue) => issue.id === activeSpellIssueId.value)) {
+      activeSpellIssueId.value = null;
+      spellPopoverPosition.value = null;
+    }
+
+    void nextTick(() => {
+      updateSpellPopoverPosition();
+    });
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.editing,
+  (editing) => {
+    if (!editing) {
+      cleanupTextareaBindings();
+      activeSpellIssueId.value = null;
+      spellPopoverPosition.value = null;
+      return;
+    }
+
+    void nextTick(() => {
+      bindTextareaElement();
+      syncSpellMirrorMetrics();
+      syncSpellMirrorScroll();
+      updateSpellPopoverPosition();
+    });
+  },
+);
 
 function applyInlineWrap(value: string, start: number, end: number, left: string, right = left): {
   nextValue: string;
@@ -166,6 +291,212 @@ function onEditorKeydown(event: KeyboardEvent) {
   });
 }
 
+function setTextareaElement(element: Element | null) {
+  textareaRef.value = element instanceof HTMLTextAreaElement ? element : null;
+  syncSpellMirrorMetrics();
+}
+
+function resetSpellMirrorMetrics() {
+  spellMirrorOffsetTop.value = 0;
+  spellMirrorOffsetLeft.value = 0;
+  spellMirrorWidth.value = 0;
+  spellMirrorHeight.value = 0;
+  spellMirrorScrollTop.value = 0;
+  spellMirrorScrollLeft.value = 0;
+}
+
+function cleanupTextareaBindings() {
+  textareaResizeObserver?.disconnect();
+  textareaResizeObserver = null;
+
+  if (boundTextareaElement) {
+    boundTextareaElement.removeEventListener("scroll", syncSpellMirrorScroll);
+  }
+  boundTextareaElement = null;
+  textareaRef.value = null;
+  spellIssueSpanMap.clear();
+  resetSpellMirrorMetrics();
+}
+
+function getTextareaElement(): HTMLTextAreaElement | null {
+  const shell = textareaShellRef.value;
+  if (
+    !textareaRef.value ||
+    !textareaRef.value.isConnected ||
+    (shell instanceof HTMLElement && !shell.contains(textareaRef.value))
+  ) {
+    textareaRef.value = null;
+  }
+
+  if (!textareaRef.value && shell) {
+    setTextareaElement(shell.querySelector("textarea"));
+  }
+  return textareaRef.value;
+}
+
+function bindTextareaElement() {
+  const textarea = getTextareaElement();
+  if (!textarea) {
+    cleanupTextareaBindings();
+    return;
+  }
+
+  if (boundTextareaElement === textarea) {
+    return;
+  }
+
+  cleanupTextareaBindings();
+  boundTextareaElement = textarea;
+  boundTextareaElement.addEventListener("scroll", syncSpellMirrorScroll, { passive: true });
+
+  if (typeof ResizeObserver !== "undefined") {
+    textareaResizeObserver = new ResizeObserver(() => {
+      syncSpellMirrorMetrics();
+      syncSpellMirrorScroll();
+      updateSpellPopoverPosition();
+    });
+    textareaResizeObserver.observe(boundTextareaElement);
+  }
+
+  syncSpellMirrorMetrics();
+  syncSpellMirrorScroll();
+}
+
+function setSpellIssueSpanRef(issueId: string | undefined, element: unknown) {
+  if (!issueId) {
+    return;
+  }
+
+  if (!(element instanceof HTMLElement)) {
+    spellIssueSpanMap.delete(issueId);
+    return;
+  }
+
+  spellIssueSpanMap.set(issueId, element);
+}
+
+function syncSpellMirrorMetrics() {
+  const textarea = getTextareaElement();
+  const shell = textareaShellRef.value;
+  if (!textarea || !shell || typeof window === "undefined") {
+    resetSpellMirrorMetrics();
+    return;
+  }
+
+  const styles = window.getComputedStyle(textarea);
+  const textareaRect = textarea.getBoundingClientRect();
+  const shellRect = shell.getBoundingClientRect();
+
+  if (textarea.clientWidth <= 0 || textarea.clientHeight <= 0 || shellRect.width <= 0 || shellRect.height <= 0) {
+    resetSpellMirrorMetrics();
+    return;
+  }
+
+  spellMirrorOffsetTop.value = textareaRect.top - shellRect.top;
+  spellMirrorOffsetLeft.value = textareaRect.left - shellRect.left;
+  spellMirrorWidth.value = textarea.clientWidth;
+  spellMirrorHeight.value = textarea.clientHeight;
+  spellMirrorPaddingTop.value = Number.parseFloat(styles.paddingTop) || 12;
+  spellMirrorPaddingRight.value = Number.parseFloat(styles.paddingRight) || 12;
+  spellMirrorPaddingBottom.value = Number.parseFloat(styles.paddingBottom) || 12;
+  spellMirrorPaddingLeft.value = Number.parseFloat(styles.paddingLeft) || 12;
+  spellMirrorFontSize.value = styles.fontSize;
+  spellMirrorLineHeight.value = styles.lineHeight;
+  spellMirrorFontFamily.value = styles.fontFamily;
+  spellMirrorFontWeight.value = styles.fontWeight;
+  spellMirrorLetterSpacing.value = styles.letterSpacing;
+  spellMirrorTabSize.value = styles.tabSize;
+}
+
+function syncSpellMirrorScroll() {
+  const textarea = getTextareaElement();
+  if (!textarea) {
+    return;
+  }
+
+  spellMirrorScrollTop.value = textarea.scrollTop;
+  spellMirrorScrollLeft.value = textarea.scrollLeft;
+  updateSpellPopoverPosition();
+}
+
+function updateSpellPopoverPosition() {
+  const activeIssue = activeSpellIssue.value;
+  if (!activeIssue || typeof window === "undefined") {
+    spellPopoverPosition.value = null;
+    return;
+  }
+
+  const panelElement = spellcheckPanelRef.value?.$el;
+  if (!(panelElement instanceof HTMLElement)) {
+    return;
+  }
+
+  const anchorElement = spellIssueSpanMap.get(activeIssue.id);
+  if (!anchorElement) {
+    spellPopoverPosition.value = null;
+    return;
+  }
+
+  const rect = anchorElement.getBoundingClientRect();
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  const panelRect = panelElement.getBoundingClientRect();
+
+  const placement = computeSpellcheckPopoverPlacement(rect, viewport, {
+    width: panelRect.width || 340,
+    height: panelRect.height || 220,
+  });
+
+  spellPopoverPlacement.value = placement.placement;
+  spellPopoverPosition.value = { left: placement.left, top: placement.top };
+}
+
+function onSpellHighlightPointerDown(issueId: string) {
+  activeSpellIssueId.value = issueId;
+  void nextTick(() => {
+    updateSpellPopoverPosition();
+  });
+}
+
+function onSpellPanelApply(issueId: string, suggestionId: string) {
+  void applySpellSuggestion(issueId, suggestionId).then(() => {
+    activeSpellIssueId.value = null;
+    void nextTick(() => {
+      updateSpellPopoverPosition();
+    });
+  });
+}
+
+function closeSpellPopover() {
+  activeSpellIssueId.value = null;
+  spellPopoverPosition.value = null;
+}
+
+function onSpellPanelPointerDown() {
+  suppressNextEditorBlur = true;
+  if (typeof window !== "undefined") {
+    window.requestAnimationFrame(() => {
+      suppressNextEditorBlur = false;
+    });
+  }
+}
+
+function onEditorBlur(event: FocusEvent) {
+  const panelElement = spellcheckPanelRef.value?.$el;
+  const relatedTarget = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+
+  if (
+    suppressNextEditorBlur ||
+    (panelElement instanceof HTMLElement && ((relatedTarget && panelElement.contains(relatedTarget)) || panelElement.contains(document.activeElement)))
+  ) {
+    void nextTick(() => {
+      getTextareaElement()?.focus();
+    });
+    return;
+  }
+
+  emit("blur");
+}
+
 function stripSvgScripts(svg: string): string {
   return svg.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
 }
@@ -241,9 +572,14 @@ onMounted(() => {
 
   mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
   syncDarkMode();
+  bindTextareaElement();
+  syncSpellMirrorMetrics();
+  syncSpellMirrorScroll();
   mediaQuery.addEventListener("change", syncDarkMode);
   syncPreviewWidth();
   bindPreviewResizeObserver();
+  window.addEventListener("resize", updateSpellPopoverPosition);
+  document.addEventListener("pointerdown", onDocumentPointerDown, true);
 });
 
 onBeforeUnmount(() => {
@@ -252,7 +588,28 @@ onBeforeUnmount(() => {
   previewResizeObserver?.disconnect();
   previewResizeObserver = null;
   clearPreviewResizeDebounceTimer();
+  cleanupTextareaBindings();
+  window.removeEventListener("resize", updateSpellPopoverPosition);
+  document.removeEventListener("pointerdown", onDocumentPointerDown, true);
 });
+
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!activeSpellIssue.value) {
+    return;
+  }
+
+  const target = event.target instanceof Node ? event.target : null;
+  const panelElement = spellcheckPanelRef.value?.$el;
+  const issueElement = activeSpellIssueId.value ? spellIssueSpanMap.get(activeSpellIssueId.value) : null;
+  if (
+    (panelElement instanceof HTMLElement && target && panelElement.contains(target)) ||
+    (issueElement && target && issueElement.contains(target))
+  ) {
+    return;
+  }
+
+  closeSpellPopover();
+}
 
 const previewText = computed(() => {
   if (props.modelValue.trim().length === 0) {
@@ -321,11 +678,29 @@ watch(
 
 watch(
   () => props.editing,
-  () => {
+  (editing) => {
+    if (!editing) {
+      return;
+    }
+
     void nextTick(() => {
+      bindTextareaElement();
+      syncSpellMirrorMetrics();
+      syncSpellMirrorScroll();
       syncPreviewWidth();
       bindPreviewResizeObserver();
       void renderPreview(props.modelValue);
+    });
+  },
+);
+
+watch(
+  () => props.modelValue,
+  () => {
+    void nextTick(() => {
+      syncSpellMirrorMetrics();
+      syncSpellMirrorScroll();
+      updateSpellPopoverPosition();
     });
   },
 );
@@ -366,12 +741,42 @@ function onCardClick(event: MouseEvent) {
   <section class="typst-card" :class="{ editing }" @click="onCardClick">
     <template v-if="editing">
       <div class="editor-grid">
-        <div class="pane">
-          <v-textarea :model-value="modelValue" rows="3" max-rows="16" auto-grow hide-details density="compact"
-            variant="solo-filled" class="code-input" @update:model-value="(value) => onInput(String(value ?? ''))"
-            placeholder="Input typst code here..."
-            title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
-            @blur="emit('blur')" @keydown="onEditorKeydown" />
+        <div class="pane spellcheck-pane">
+          <div ref="textareaShellRef" class="spellcheck-editor-wrap">
+            <v-textarea :model-value="modelValue" rows="3" max-rows="16" auto-grow hide-details density="compact"
+             variant="solo-filled" class="code-input" @update:model-value="(value) => onInput(String(value ?? ''))"
+             placeholder="Input typst code here..."
+             title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
+             @blur="onEditorBlur" @keydown="onEditorKeydown" @focus="syncSpellMirrorMetrics" @update:focused="syncSpellMirrorMetrics" />
+            <div v-if="spellHighlightLayerVisible" class="spellcheck-highlight-layer" :style="spellHighlightLayerStyle" aria-hidden="true">
+              <div class="spellcheck-highlight-content" :style="spellMirrorStyle">
+                <span
+                  v-for="segment in spellHighlightSegments"
+                  :ref="(el) => setSpellIssueSpanRef(segment.issue?.id, el)"
+                  :key="segment.key"
+                  class="spellcheck-highlight-segment"
+                  :class="{
+                    'is-issue': Boolean(segment.issue),
+                    'is-active': segment.issue?.id === activeSpellIssueId,
+                  }"
+                  @pointerdown.stop.prevent="segment.issue && onSpellHighlightPointerDown(segment.issue.id)"
+                >{{ segment.text }}</span>
+              </div>
+            </div>
+          </div>
+          <SpellcheckPanel
+            ref="spellcheckPanelRef"
+            title="Typst spellcheck"
+            :issues="spellPanelIssues"
+            :loading="spellLoading"
+            :error="spellError"
+            :visible="spellPanelVisible"
+            :position="spellPopoverPosition"
+            :placement="spellPopoverPlacement"
+            empty-label="No spelling issues outside formulas."
+            @pointerdown.capture="onSpellPanelPointerDown"
+            @apply="onSpellPanelApply"
+          />
         </div>
 
         <div ref="previewHostRef" class="pane preview-pane">
@@ -421,6 +826,73 @@ function onCardClick(event: MouseEvent) {
 
 .pane {
   min-width: 0;
+}
+
+.spellcheck-pane {
+  position: relative;
+  padding-bottom: 0;
+}
+
+.spellcheck-editor-wrap {
+  position: relative;
+}
+
+.spellcheck-editor-wrap :deep(.v-field),
+.spellcheck-editor-wrap :deep(.v-field__overlay),
+.spellcheck-editor-wrap :deep(.v-field__field),
+.spellcheck-editor-wrap :deep(.v-field__input) {
+  background: transparent !important;
+}
+
+.spellcheck-editor-wrap :deep(textarea:not(.v-textarea__sizer)) {
+  position: relative;
+  z-index: 2;
+  color: var(--fox-text-body) !important;
+  caret-color: var(--fox-text-body);
+}
+
+.spellcheck-editor-wrap :deep(textarea:not(.v-textarea__sizer)::selection) {
+  background: color-mix(in srgb, var(--fox-primary) 35%, transparent);
+  color: var(--fox-text-body);
+}
+
+.spellcheck-highlight-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.spellcheck-highlight-content {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.spellcheck-highlight-segment {
+  pointer-events: none;
+}
+
+.spellcheck-highlight-segment.is-issue {
+  pointer-events: auto;
+  cursor: pointer;
+   color: transparent;
+   -webkit-text-fill-color: transparent;
+  background: rgba(241, 14, 33, 0.13);
+  text-decoration: underline #f10e21 solid 2px;
+  text-underline-offset: 0.18em;
+  border-radius: 0.22rem;
+}
+
+.spellcheck-highlight-segment.is-active {
+  background: rgba(238, 66, 102, 0.24);
 }
 
 .pane-label {
@@ -520,6 +992,10 @@ function onCardClick(event: MouseEvent) {
 @media (max-width: 980px) {
   .editor-grid {
     grid-template-columns: 1fr;
+  }
+
+  .spellcheck-pane {
+    padding-bottom: 0;
   }
 }
 </style>
