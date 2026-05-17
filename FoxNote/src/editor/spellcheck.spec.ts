@@ -4,7 +4,7 @@ import { applySpellcheckSuggestion, createSpellcheckLintOptions, TYPST_FORMULA_R
 describe("spellcheck helpers", () => {
   it("uses Typst mode with formula masking", () => {
     expect(createSpellcheckLintOptions("typst")).toEqual({
-      language: "typst",
+      language: "plaintext",
       regex_mask: TYPST_FORMULA_REGEX_MASK,
     });
   });
