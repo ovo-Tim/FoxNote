@@ -53,6 +53,7 @@ const spellMirrorFontFamily = ref(
 const spellMirrorFontWeight = ref("400");
 const spellMirrorLetterSpacing = ref("normal");
 const spellMirrorTabSize = ref("4");
+const spellHasRangeSelection = ref(false);
 const spellIssueSpanMap = new Map<string, HTMLElement>();
 let renderTicket = 0;
 
@@ -61,6 +62,7 @@ const MAX_PREVIEW_WIDTH_REM = 40;
 let mediaQuery: MediaQueryList | null = null;
 let previewResizeObserver: ResizeObserver | null = null;
 let previewResizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let previewTypingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let textareaResizeObserver: ResizeObserver | null = null;
 let boundTextareaElement: HTMLTextAreaElement | null = null;
 let suppressNextEditorBlur = false;
@@ -95,7 +97,7 @@ const spellPanelVisible = computed(
   () => props.editing && !!textareaRef.value && (Boolean(activeSpellIssue.value) || Boolean(spellError.value)),
 );
 const spellHighlightLayerVisible = computed(
-  () => props.editing && spellMirrorWidth.value > 0 && spellMirrorHeight.value > 0,
+  () => props.editing && !spellHasRangeSelection.value && spellMirrorWidth.value > 0 && spellMirrorHeight.value > 0,
 );
 const spellHighlightLayerStyle = computed(() => ({
   top: `${spellMirrorOffsetTop.value}px`,
@@ -303,6 +305,7 @@ function resetSpellMirrorMetrics() {
   spellMirrorHeight.value = 0;
   spellMirrorScrollTop.value = 0;
   spellMirrorScrollLeft.value = 0;
+  spellHasRangeSelection.value = false;
 }
 
 function cleanupTextareaBindings() {
@@ -465,12 +468,20 @@ function findSpellIssueForSelection(start: number, end: number): SpellcheckIssue
 function syncActiveSpellIssueFromInput() {
   const textarea = getTextareaElement();
   if (!textarea) {
+    spellHasRangeSelection.value = false;
     closeSpellPopover();
     return;
   }
 
   const start = textarea.selectionStart ?? 0;
   const end = textarea.selectionEnd ?? start;
+   spellHasRangeSelection.value = end > start;
+
+   if (spellHasRangeSelection.value) {
+    closeSpellPopover();
+    return;
+   }
+
   const issue = findSpellIssueForSelection(start, end);
   if (!issue) {
     closeSpellPopover();
@@ -568,6 +579,22 @@ function clearPreviewResizeDebounceTimer() {
   previewResizeDebounceTimer = null;
 }
 
+function clearPreviewTypingDebounceTimer() {
+  if (!previewTypingDebounceTimer) {
+    return;
+  }
+  clearTimeout(previewTypingDebounceTimer);
+  previewTypingDebounceTimer = null;
+}
+
+function schedulePreviewRender(source: string) {
+  clearPreviewTypingDebounceTimer();
+  previewTypingDebounceTimer = setTimeout(() => {
+    previewTypingDebounceTimer = null;
+    void renderPreview(source);
+  }, 220);
+}
+
 function bindPreviewResizeObserver() {
   previewResizeObserver?.disconnect();
   previewResizeObserver = null;
@@ -614,6 +641,7 @@ onBeforeUnmount(() => {
   previewResizeObserver?.disconnect();
   previewResizeObserver = null;
   clearPreviewResizeDebounceTimer();
+  clearPreviewTypingDebounceTimer();
   cleanupTextareaBindings();
   window.removeEventListener("resize", updateSpellPopoverPosition);
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
@@ -682,6 +710,12 @@ async function renderPreview(source: string) {
 watch(
   () => props.modelValue,
   (value) => {
+    if (props.editing) {
+      schedulePreviewRender(value);
+      return;
+    }
+
+    clearPreviewTypingDebounceTimer();
     void renderPreview(value);
   },
   { immediate: true },
@@ -723,9 +757,11 @@ watch(
 watch(
   () => props.modelValue,
   () => {
+    if (!activeSpellIssue.value) {
+      return;
+    }
+
     void nextTick(() => {
-      syncSpellMirrorMetrics();
-      syncSpellMirrorScroll();
       updateSpellPopoverPosition();
     });
   },
@@ -774,8 +810,8 @@ function onCardClick(event: MouseEvent) {
              spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
               placeholder="Input typst code here..."
                title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
-                @blur="onEditorBlur" @keydown="onEditorKeydown" @focus="syncSpellMirrorMetrics" @update:focused="syncSpellMirrorMetrics"
-               @keyup="syncActiveSpellIssueFromInput" @select="syncActiveSpellIssueFromInput" />
+               @blur="onEditorBlur" @keydown="onEditorKeydown" @focus="syncSpellMirrorMetrics" @update:focused="syncSpellMirrorMetrics"
+                @click="syncActiveSpellIssueFromInput" @mouseup="syncActiveSpellIssueFromInput" @keyup="syncActiveSpellIssueFromInput" @select="syncActiveSpellIssueFromInput" />
             <div v-if="spellHighlightLayerVisible" class="spellcheck-highlight-layer" :style="spellHighlightLayerStyle" aria-hidden="true">
               <div class="spellcheck-highlight-content" :style="spellMirrorStyle">
                 <span

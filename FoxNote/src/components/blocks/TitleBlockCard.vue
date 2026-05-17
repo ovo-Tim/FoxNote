@@ -163,6 +163,7 @@ function createInlineSpellField(config: {
   const fontWeight = ref("400");
   const letterSpacing = ref("normal");
   const tabSize = ref("4");
+  const hasRangeSelection = ref(false);
   const issueSpanMap = new Map<string, HTMLElement>();
 
   const activeIssue = computed<SpellcheckIssue | null>(() => {
@@ -180,7 +181,7 @@ function createInlineSpellField(config: {
   const panelVisible = computed(
     () => props.editing && !!inputRef.value && (Boolean(activeIssue.value) || Boolean(config.error.value)),
   );
-  const layerVisible = computed(() => props.editing && width.value > 0 && height.value > 0);
+  const layerVisible = computed(() => props.editing && !hasRangeSelection.value && width.value > 0 && height.value > 0);
   const layerStyle = computed(() => ({
     top: `${offsetTop.value}px`,
     left: `${offsetLeft.value}px`,
@@ -233,6 +234,7 @@ function createInlineSpellField(config: {
     offsetLeft.value = 0;
     width.value = 0;
     height.value = 0;
+    hasRangeSelection.value = false;
   }
 
   function getInputElement() {
@@ -422,12 +424,20 @@ function createInlineSpellField(config: {
   function syncActiveIssueFromInput() {
     const input = getInputElement();
     if (!input) {
+      hasRangeSelection.value = false;
       closePopover();
       return;
     }
 
     const start = input.selectionStart ?? 0;
     const end = input.selectionEnd ?? start;
+    hasRangeSelection.value = end > start;
+
+    if (hasRangeSelection.value) {
+      closePopover();
+      return;
+    }
+
     const issue = findIssueForSelection(start, end);
     if (!issue) {
       closePopover();
@@ -727,9 +737,11 @@ watch(
 watch(
   () => props.modelValue,
   () => {
+    if (!titleSpellField.activeIssueId) {
+      return;
+    }
+
     void nextTick(() => {
-      titleSpellField.syncMetrics();
-      titleSpellField.syncScroll();
       titleSpellField.updatePopoverPosition();
     });
   },
@@ -738,9 +750,11 @@ watch(
 watch(
   () => localSummary.value,
   () => {
+    if (!summarySpellField.activeIssueId) {
+      return;
+    }
+
     void nextTick(() => {
-      summarySpellField.syncMetrics();
-      summarySpellField.syncScroll();
       summarySpellField.updatePopoverPosition();
     });
   },
@@ -772,6 +786,7 @@ watch(
             class="title-input" @update:model-value="(value) => emit('updateModelValue', String(value ?? ''))"
             spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
             @focus="titleSpellField.syncMetrics" @update:focused="titleSpellField.syncMetrics"
+            @click="titleSpellField.syncActiveIssueFromInput" @mouseup="titleSpellField.syncActiveIssueFromInput"
             @keyup="titleSpellField.syncActiveIssueFromInput" @select="titleSpellField.syncActiveIssueFromInput" />
           <div v-if="titleSpellField.layerVisible" class="spellcheck-highlight-layer spellcheck-highlight-layer--single" :style="titleSpellField.layerStyle" aria-hidden="true">
             <div class="spellcheck-highlight-content spellcheck-highlight-content--single" :style="titleSpellField.mirrorStyle">
@@ -811,6 +826,7 @@ watch(
           spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
           placeholder="Optional summary shown when section is folded" @blur="onSummaryBlur"
           @focus="summarySpellField.syncMetrics" @update:focused="summarySpellField.syncMetrics"
+          @click="summarySpellField.syncActiveIssueFromInput" @mouseup="summarySpellField.syncActiveIssueFromInput"
           @keyup="summarySpellField.syncActiveIssueFromInput" @select="summarySpellField.syncActiveIssueFromInput" />
         <div v-if="summarySpellField.layerVisible" class="spellcheck-highlight-layer" :style="summarySpellField.layerStyle" aria-hidden="true">
           <div class="spellcheck-highlight-content" :style="summarySpellField.mirrorStyle">

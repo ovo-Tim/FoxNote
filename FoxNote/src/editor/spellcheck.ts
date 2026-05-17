@@ -63,6 +63,65 @@ function getSuggestionLabel(suggestion: Suggestion): string {
   return text;
 }
 
+function maybeLogContractionLint(lint: Lint, issueId: string, sourceText?: string) {
+  const span = lint.span();
+  const problemText = lint.get_problem_text();
+  const message = lint.message();
+  const sourceSlice = sourceText?.slice(Math.max(0, span.start - 8), Math.min(sourceText.length, span.end + 8)) ?? "";
+  const exactSlice = sourceText?.slice(span.start, span.end) ?? "";
+
+  if (
+    !/[A-Za-z]['’][A-Za-z]+/.test(problemText) &&
+    !/[A-Za-z]['’][A-Za-z]+/.test(exactSlice) &&
+    !/[A-Za-z]['’][A-Za-z]+/.test(sourceSlice) &&
+    !/\b(?:['’]s|['’]re|['’]ve|['’]ll|['’]d|['’]m|n't)\b/i.test(problemText) &&
+    !/\b(?:['’]s|['’]re|['’]ve|['’]ll|['’]d|['’]m|n't)\b/i.test(exactSlice) &&
+    !/\b(?:['’]s|['’]re|['’]ve|['’]ll|['’]d|['’]m|n't)\b/i.test(sourceSlice)
+  ) {
+    return;
+  }
+
+  console.warn("[Spellcheck][ContractionLint]", {
+    issueId,
+    start: span.start,
+    end: span.end,
+    problemText,
+    exactSlice,
+    sourceSlice,
+    message,
+    kind: lint.lint_kind_pretty(),
+    suggestions: lint.suggestions().slice(0, 3).map((suggestion) => suggestion.get_replacement_text()),
+  });
+}
+
+function shouldSuppressFalsePositiveLint(lint: Lint, sourceText: string): boolean {
+  const span = lint.span();
+  const message = lint.message();
+  const kind = lint.lint_kind_pretty();
+  const exactSlice = sourceText.slice(span.start, span.end);
+  const sourceSlice = sourceText.slice(Math.max(0, span.start - 12), Math.min(sourceText.length, span.end + 12));
+
+  if (
+    kind === "Word Choice" &&
+    /words would go better together/i.test(message) &&
+    /^[A-Za-z]['’]?[A-Za-z]?\s+[A-Za-z]['’]?[A-Za-z]?$/i.test(exactSlice) &&
+    /[?!.]\s*$/.test(sourceText.slice(Math.max(0, span.start - 3), span.start))
+  ) {
+    return true;
+  }
+
+  if (
+    kind === "Word Choice" &&
+    /words would go better together/i.test(message) &&
+    /\b[A-Za-z]+['’]s\b/i.test(sourceSlice) &&
+    /\b[A-Za-z]+\s+[A-Za-z]+\b/.test(exactSlice)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function mapLintToIssue(lint: Lint, index: number): SpellcheckIssue {
   const span = lint.span();
   const issueId = createIssueId(lint, index);
@@ -222,7 +281,15 @@ export function useSpellcheckField(options: UseSpellcheckFieldOptions): {
         return;
       }
 
-      issues.value = lints.map((lint, index) => mapLintToIssue(lint, index));
+      const filteredLints = lints.filter((lint) => !shouldSuppressFalsePositiveLint(lint, text));
+
+      if (/[A-Za-z]['’][A-Za-z]+/.test(text)) {
+        filteredLints.forEach((lint, index) => {
+          maybeLogContractionLint(lint, createIssueId(lint, index), text);
+        });
+      }
+
+      issues.value = filteredLints.map((lint, index) => mapLintToIssue(lint, index));
       error.value = "";
     } catch (reason) {
       if (runId !== lintRunId) {
