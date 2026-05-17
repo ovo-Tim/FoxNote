@@ -81,7 +81,7 @@ interface InlineSpellField {
   syncScroll: () => void;
   updatePopoverPosition: () => void;
   setIssueSpanRef: (issueId: string | undefined, element: unknown) => void;
-  onHighlightPointerDown: (issueId: string) => void;
+  syncActiveIssueFromInput: () => void;
   closePopover: () => void;
   containsTarget: (target: Node | null) => boolean;
 }
@@ -394,6 +394,18 @@ function createInlineSpellField(config: {
     popoverPosition.value = { left: placement.left, top: placement.top };
   }
 
+  function findIssueForSelection(start: number, end: number): SpellcheckIssue | null {
+    return (
+      config.issues.value.find((issue) => {
+        if (start === end) {
+          return start >= issue.start && start <= issue.end;
+        }
+
+        return start < issue.end && end > issue.start;
+      }) ?? null
+    );
+  }
+
   function setIssueSpanRef(issueId: string | undefined, element: unknown) {
     if (!issueId) {
       return;
@@ -407,8 +419,22 @@ function createInlineSpellField(config: {
     issueSpanMap.set(issueId, element);
   }
 
-  function onHighlightPointerDown(issueId: string) {
-    activeIssueId.value = issueId;
+  function syncActiveIssueFromInput() {
+    const input = getInputElement();
+    if (!input) {
+      closePopover();
+      return;
+    }
+
+    const start = input.selectionStart ?? 0;
+    const end = input.selectionEnd ?? start;
+    const issue = findIssueForSelection(start, end);
+    if (!issue) {
+      closePopover();
+      return;
+    }
+
+    activeIssueId.value = issue.id;
     void nextTick(() => {
       updatePopoverPosition();
     });
@@ -468,7 +494,7 @@ function createInlineSpellField(config: {
     syncScroll,
     updatePopoverPosition,
     setIssueSpanRef,
-    onHighlightPointerDown,
+    syncActiveIssueFromInput,
     closePopover,
     containsTarget,
   };
@@ -745,7 +771,8 @@ watch(
           <v-text-field :model-value="modelValue" density="compact" variant="solo-filled" hide-details label="Title"
             class="title-input" @update:model-value="(value) => emit('updateModelValue', String(value ?? ''))"
             spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
-            @focus="titleSpellField.syncMetrics" @update:focused="titleSpellField.syncMetrics" />
+            @focus="titleSpellField.syncMetrics" @update:focused="titleSpellField.syncMetrics"
+            @keyup="titleSpellField.syncActiveIssueFromInput" @select="titleSpellField.syncActiveIssueFromInput" />
           <div v-if="titleSpellField.layerVisible" class="spellcheck-highlight-layer spellcheck-highlight-layer--single" :style="titleSpellField.layerStyle" aria-hidden="true">
             <div class="spellcheck-highlight-content spellcheck-highlight-content--single" :style="titleSpellField.mirrorStyle">
               <span
@@ -757,7 +784,6 @@ watch(
                   'is-issue': Boolean(segment.issue),
                   'is-active': segment.issue?.id === titleSpellField.activeIssueId,
                 }"
-                @pointerdown.stop.prevent="segment.issue && titleSpellField.onHighlightPointerDown(segment.issue.id)"
               >{{ segment.text }}</span>
             </div>
           </div>
@@ -784,7 +810,8 @@ watch(
           hide-details class="summary-input" label="Summary when folded"
           spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
           placeholder="Optional summary shown when section is folded" @blur="onSummaryBlur"
-          @focus="summarySpellField.syncMetrics" @update:focused="summarySpellField.syncMetrics" />
+          @focus="summarySpellField.syncMetrics" @update:focused="summarySpellField.syncMetrics"
+          @keyup="summarySpellField.syncActiveIssueFromInput" @select="summarySpellField.syncActiveIssueFromInput" />
         <div v-if="summarySpellField.layerVisible" class="spellcheck-highlight-layer" :style="summarySpellField.layerStyle" aria-hidden="true">
           <div class="spellcheck-highlight-content" :style="summarySpellField.mirrorStyle">
             <span
@@ -796,7 +823,6 @@ watch(
                 'is-issue': Boolean(segment.issue),
                 'is-active': segment.issue?.id === summarySpellField.activeIssueId,
               }"
-              @pointerdown.stop.prevent="segment.issue && summarySpellField.onHighlightPointerDown(segment.issue.id)"
             >{{ segment.text }}</span>
           </div>
         </div>
@@ -937,6 +963,7 @@ watch(
   position: relative;
   z-index: 2;
   color: var(--fox-text-body) !important;
+  -webkit-text-fill-color: var(--fox-text-body);
   caret-color: var(--fox-text-body);
   text-transform: none;
   font-variant-east-asian: normal;
@@ -945,14 +972,15 @@ watch(
 
 .title-spellcheck-wrap :deep(input::selection),
 .summary-spellcheck-wrap :deep(textarea:not(.v-textarea__sizer)::selection) {
-  background: color-mix(in srgb, var(--fox-primary) 35%, transparent);
-  color: var(--fox-text-body);
+  background-color: Highlight;
+  color: HighlightText;
+  -webkit-text-fill-color: HighlightText;
 }
 
 .spellcheck-highlight-layer {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 1;
   pointer-events: none;
   overflow: hidden;
 }
@@ -988,8 +1016,7 @@ watch(
 }
 
 .spellcheck-highlight-segment.is-issue {
-  pointer-events: auto;
-  cursor: pointer;
+  pointer-events: none;
   color: transparent;
   -webkit-text-fill-color: transparent;
   background: rgba(241, 14, 33, 0.13);

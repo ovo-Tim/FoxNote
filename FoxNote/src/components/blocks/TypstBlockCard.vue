@@ -450,8 +450,34 @@ function updateSpellPopoverPosition() {
   spellPopoverPosition.value = { left: placement.left, top: placement.top };
 }
 
-function onSpellHighlightPointerDown(issueId: string) {
-  activeSpellIssueId.value = issueId;
+function findSpellIssueForSelection(start: number, end: number): SpellcheckIssue | null {
+  return (
+    spellIssues.value.find((issue) => {
+      if (start === end) {
+        return start >= issue.start && start <= issue.end;
+      }
+
+      return start < issue.end && end > issue.start;
+    }) ?? null
+  );
+}
+
+function syncActiveSpellIssueFromInput() {
+  const textarea = getTextareaElement();
+  if (!textarea) {
+    closeSpellPopover();
+    return;
+  }
+
+  const start = textarea.selectionStart ?? 0;
+  const end = textarea.selectionEnd ?? start;
+  const issue = findSpellIssueForSelection(start, end);
+  if (!issue) {
+    closeSpellPopover();
+    return;
+  }
+
+  activeSpellIssueId.value = issue.id;
   void nextTick(() => {
     updateSpellPopoverPosition();
   });
@@ -747,8 +773,9 @@ function onCardClick(event: MouseEvent) {
              variant="solo-filled" class="code-input" @update:model-value="(value) => onInput(String(value ?? ''))"
              spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"
               placeholder="Input typst code here..."
-              title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
-              @blur="onEditorBlur" @keydown="onEditorKeydown" @focus="syncSpellMirrorMetrics" @update:focused="syncSpellMirrorMetrics" />
+               title="Shortcuts: Cmd/Ctrl+B bold, Cmd/Ctrl+I italic, Cmd/Ctrl+U underline, Cmd/Ctrl+Shift+1 note, +2 tip, +3 important, +4 warning, +5 caution, +6 todo"
+                @blur="onEditorBlur" @keydown="onEditorKeydown" @focus="syncSpellMirrorMetrics" @update:focused="syncSpellMirrorMetrics"
+               @keyup="syncActiveSpellIssueFromInput" @select="syncActiveSpellIssueFromInput" />
             <div v-if="spellHighlightLayerVisible" class="spellcheck-highlight-layer" :style="spellHighlightLayerStyle" aria-hidden="true">
               <div class="spellcheck-highlight-content" :style="spellMirrorStyle">
                 <span
@@ -760,7 +787,6 @@ function onCardClick(event: MouseEvent) {
                     'is-issue': Boolean(segment.issue),
                     'is-active': segment.issue?.id === activeSpellIssueId,
                   }"
-                  @pointerdown.stop.prevent="segment.issue && onSpellHighlightPointerDown(segment.issue.id)"
                 >{{ segment.text }}</span>
               </div>
             </div>
@@ -849,6 +875,7 @@ function onCardClick(event: MouseEvent) {
   position: relative;
   z-index: 2;
   color: var(--fox-text-body) !important;
+  -webkit-text-fill-color: var(--fox-text-body);
   caret-color: var(--fox-text-body);
   text-transform: none;
   font-variant-east-asian: normal;
@@ -856,14 +883,15 @@ function onCardClick(event: MouseEvent) {
 }
 
 .spellcheck-editor-wrap :deep(textarea:not(.v-textarea__sizer)::selection) {
-  background: color-mix(in srgb, var(--fox-primary) 35%, transparent);
-  color: var(--fox-text-body);
+  background-color: Highlight;
+  color: HighlightText;
+  -webkit-text-fill-color: HighlightText;
 }
 
 .spellcheck-highlight-layer {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 1;
   pointer-events: none;
   overflow: hidden;
 }
@@ -888,10 +916,9 @@ function onCardClick(event: MouseEvent) {
 }
 
 .spellcheck-highlight-segment.is-issue {
-  pointer-events: auto;
-  cursor: pointer;
-   color: transparent;
-   -webkit-text-fill-color: transparent;
+  pointer-events: none;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
   background: rgba(241, 14, 33, 0.13);
   text-decoration: underline #f10e21 solid 2px;
   text-underline-offset: 0.18em;
